@@ -14,8 +14,8 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', corsMiddleware);
 
-app.route('/api/auth', authRoutes);
-app.route('/api/relay', relayRoutes);
+app.route('/auth', authRoutes);
+app.route('/relay', relayRoutes);
 
 app.get('/health', (c) => c.json({ ok: true }));
 
