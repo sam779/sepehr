@@ -1,0 +1,22 @@
+{
+  "name": "sepehr",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w packages/shared-types && npm run build -w packages/crypto && npm run build -w packages/config-schema && npm run build --w apps/portal-worker && npm run build -w apps/portal-web",
+    "typecheck": "tsc -b packages/shared-types packages/crypto packages/config-schema apps/portal-worker apps/portal-web",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.1",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
+  }
+}

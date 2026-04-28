@@ -1,0 +1,23 @@
+{
+  "name": "@sepehr/portal-worker",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --config ../../infra/wrangler/portal.toml",
+    "deploy": "wrangler deploy --config ../../infra/wrangler/portal.toml",
+    "typecheck": "tsc --noEmit",
+    "db:migrate:local": "wrangler d1 migrations apply sepehr-portal --local --config ../../infra/wrangler/portal.toml",
+    "db:migrate:remote": "wrangler d1 migrations apply sepehr-portal --remote --config ../../infra/wrangler/portal.toml"
+  },
+  "dependencies": {
+    "@sepehr/config-schema": "*",
+    "@sepehr/crypto": "*",
+    "@sepehr/shared-types": "*",
+    "hono": "^4.5.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "wrangler": "^3.72.2"
+  }
+}
