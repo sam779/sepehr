@@ -262,7 +262,7 @@ function setSessionCookie(c: Parameters<typeof setCookie>[0], token: string): vo
   setCookie(c, 'session', token, {
     httpOnly: true,
     secure: true,
-    sameSite: 'Strict',
+    sameSite: 'None',
     path: '/',
     expires: new Date(Date.now() + SESSION_DURATION_MS),
   });
