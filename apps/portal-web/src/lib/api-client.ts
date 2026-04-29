@@ -55,6 +55,7 @@ export const api = {
   relay: {
     get: () => request<Relay | null>('/relay'),
     deploy: (body: DeployRelayRequest) => request<Relay>('/relay/deploy', json('POST', body)),
+    redeploy: () => request<undefined>('/relay/redeploy', { method: 'POST' }),
     delete: () => request<undefined>('/relay', { method: 'DELETE' }),
   },
 

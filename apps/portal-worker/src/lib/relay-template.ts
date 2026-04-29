@@ -32,6 +32,7 @@ import { connect } from 'cloudflare:sockets';
 const RELAY_ID = ${RELAY_ID};
 const PORTAL_URL = ${PORTAL_URL};
 const RELAY_SECRET = ${RELAY_SECRET};
+const DEBUG = false; // set to true for verbose connection logs
 
 // ─── In-memory rate limit (resets per-isolate restart) ───────────────────────
 const rateLimitMap = new Map(); // ip → { count, windowStart }
@@ -187,7 +188,7 @@ async function checkAccess(password, relayId, portalUrl, relaySecret) {
   try {
     const controller = new AbortController();
     const tid = setTimeout(() => controller.abort(), 500);
-    const res = await fetch(portalUrl + '/api/relay/check', {
+    const res = await fetch(portalUrl + '/relay/check', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -208,7 +209,7 @@ async function checkAccess(password, relayId, portalUrl, relaySecret) {
 
 // ─── Fire-and-forget portal notification ────────────────────────────────────
 function notifyPortal(relayId, event, portalUrl, relaySecret) {
-  fetch(portalUrl + '/api/relay/notify', {
+  fetch(portalUrl + '/relay/notify', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -218,8 +219,20 @@ function notifyPortal(relayId, event, portalUrl, relaySecret) {
   }).catch(() => {});
 }
 
-// ─── Stream piping ────────────────────────────────────────────────────────────
-async function pipeStreams(ws, socket, initialData) {
+// ─── Concat two Uint8Arrays ──────────────────────────────────────────────────
+function concatBytes(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+// ─── Bidirectional pipe: WS ↔ TCP ────────────────────────────────────────────
+// reader    : already-obtained ReadableStreamDefaultReader from a TransformStream
+//             that is fed by the WS onMessage handler.
+// socket    : cloudflare:sockets TCP socket
+// initialData : any payload bytes that arrived in the same buffer as the header
+async function pipeStreams(ws, socket, reader, initialData) {
   let idleHandle;
   const IDLE_MS  = 5 * 60 * 1000;  // 5 minutes
   const HARD_MS  = 60 * 60 * 1000; // 1 hour
@@ -231,70 +244,46 @@ async function pipeStreams(ws, socket, initialData) {
   resetIdle();
   const hardHandle = setTimeout(() => closeBothSides(ws, socket), HARD_MS);
 
-  // Use a TransformStream to queue WS messages for ordered delivery to socket
-  const { readable, writable } = new TransformStream();
-  const msgWriter = writable.getWriter();
-
-  const onMessage = (event) => {
-    if (typeof event.data === 'string') return;        // ignore text frames
-    const data = event.data instanceof ArrayBuffer
-      ? new Uint8Array(event.data)
-      : event.data;
-    if (!data || data.length === 0) return;            // ignore empty frames
-    resetIdle();
-    msgWriter.write(data).catch(() => msgWriter.close().catch(() => {}));
-  };
-  const onWsClose = () => msgWriter.close().catch(() => {});
-  const onWsError = () => msgWriter.close().catch(() => {});
-
-  ws.addEventListener('message', onMessage);
-  ws.addEventListener('close', onWsClose);
-  ws.addEventListener('error', onWsError);
-
   try {
     const socketWriter = socket.writable.getWriter();
 
     // ws → socket
     const wsToSocket = (async () => {
-      const reader = readable.getReader();
       try {
-        if (initialData && initialData.length > 0) await socketWriter.write(initialData);
+        if (initialData && initialData.length > 0) {
+          await socketWriter.write(initialData);
+          resetIdle();
+        }
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           await socketWriter.write(value);
+          resetIdle();
         }
-      } finally {
-        reader.releaseLock();
-        socketWriter.releaseLock();
-      }
+      } catch { /* WS or socket closed */ }
+      finally { try { socketWriter.releaseLock(); } catch {} }
     })();
 
     // socket → ws
     const socketToWs = (async () => {
-      const reader = socket.readable.getReader();
+      const socketReader = socket.readable.getReader();
       try {
         while (true) {
-          const { done, value } = await reader.read();
+          const { done, value } = await socketReader.read();
           if (done) break;
           if (!value || value.length === 0) continue;
           resetIdle();
           ws.send(value);
         }
-      } catch {
-        // socket closed
-      } finally {
-        reader.releaseLock();
-      }
+      } catch { /* socket closed */ }
+      finally { try { socketReader.releaseLock(); } catch {} }
     })();
 
+    // Close both sides as soon as either direction finishes
     await Promise.race([wsToSocket, socketToWs]);
   } finally {
     clearTimeout(idleHandle);
     clearTimeout(hardHandle);
-    ws.removeEventListener('message', onMessage);
-    ws.removeEventListener('close', onWsClose);
-    ws.removeEventListener('error', onWsError);
     closeBothSides(ws, socket);
   }
 }
@@ -306,82 +295,123 @@ function closeBothSides(ws, socket) {
 
 // ─── Trojan handler ──────────────────────────────────────────────────────────
 async function handleTrojanSession(ws, ip) {
-  // Wait for first binary frame (10-second timeout)
-  let firstData;
+  // Queue ALL incoming WS frames from the very start so we don't miss frames
+  // that arrive while we are parsing the header asynchronously.
+  const { readable, writable } = new TransformStream();
+  const msgWriter = writable.getWriter();
+
+  const onMessage = (event) => {
+    if (typeof event.data === 'string') return; // ignore text frames
+    const chunk = event.data instanceof ArrayBuffer
+      ? new Uint8Array(event.data)
+      : event.data;
+    if (!chunk || chunk.length === 0) return; // ignore empty/keepalive frames
+    msgWriter.write(chunk).catch(() => msgWriter.close().catch(() => {}));
+  };
+  const onWsClose = () => msgWriter.close().catch(() => {});
+  const onWsError = () => msgWriter.close().catch(() => {});
+
+  ws.addEventListener('message', onMessage);
+  ws.addEventListener('close', onWsClose);
+  ws.addEventListener('error', onWsError);
+
+  const reader = readable.getReader();
+
+  // Header-receive timeout
+  let headerTimedOut = false;
+  const headerTimeout = setTimeout(() => {
+    headerTimedOut = true;
+    try { ws.close(1002, 'Header timeout'); } catch {}
+    msgWriter.close().catch(() => {});
+  }, 10000);
+
   try {
-    firstData = await new Promise((resolve, reject) => {
-      const tid = setTimeout(() => reject(new Error('timeout')), 10000);
-      ws.addEventListener('message', (ev) => {
-        clearTimeout(tid);
-        if (typeof ev.data === 'string') { reject(new Error('text-frame')); return; }
-        resolve(ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : ev.data);
-      }, { once: true });
-      ws.addEventListener('close', () => { clearTimeout(tid); reject(new Error('closed')); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(tid); reject(new Error('error')); }, { once: true });
-    });
-  } catch {
-    try { ws.close(1002, 'No header'); } catch {}
-    return;
-  }
+    // ── Step 1: accumulate frames until full Trojan header is parseable ──────
+    let buffer = new Uint8Array(0);
+    let header = null;
 
-  // Guard: >16KB
-  if (firstData.length > 16 * 1024) {
-    try { ws.close(1009, 'Frame too large'); } catch {}
-    return;
-  }
+    while (!header) {
+      const { done, value } = await reader.read();
+      if (done || headerTimedOut) {
+        try { ws.close(1002, 'No header'); } catch {}
+        return;
+      }
 
-  const header = parseTrojanHeader(firstData);
-  if (!header) {
-    try { ws.close(1002, 'Invalid Trojan header'); } catch {}
-    return;
-  }
+      buffer = concatBytes(buffer, value);
 
-  // Reject UDP
-  if (header.cmd === 0x03) {
-    try { ws.close(1003, 'UDP not supported'); } catch {}
-    return;
-  }
+      if (buffer.length > 16 * 1024) {
+        try { ws.close(1009, 'Header too large'); } catch {}
+        return;
+      }
 
-  // Portal access check
-  const { valid, paused } = await checkAccess(header.password, RELAY_ID, PORTAL_URL, RELAY_SECRET);
-  if (!valid) {
-    try { ws.close(1008, 'Unauthorized'); } catch {}
-    return;
-  }
-  if (paused) {
-    try { ws.close(1008, 'Paused'); } catch {}
-    return;
-  }
+      header = parseTrojanHeader(buffer);
+    }
 
-  // SSRF protection
-  if (header.atyp === 0x03) {
-    if (!validateHostname(header.host)) {
-      try { ws.close(1008, 'Invalid hostname'); } catch {}
+    clearTimeout(headerTimeout);
+
+    if (DEBUG) console.log('[trojan] password:', header.password, 'target:', header.host + ':' + header.port);
+
+    // ── Step 2: reject UDP ────────────────────────────────────────────────────
+    if (header.cmd === 0x03) {
+      try { ws.close(1003, 'UDP not supported'); } catch {}
       return;
     }
+
+    // ── Step 3: portal access check ──────────────────────────────────────────
+    const { valid, paused } = await checkAccess(header.password, RELAY_ID, PORTAL_URL, RELAY_SECRET);
+    if (DEBUG) console.log('[trojan] access check:', { valid, paused });
+    if (!valid) {
+      try { ws.close(1008, 'Unauthorized'); } catch {}
+      return;
+    }
+    if (paused) {
+      try { ws.close(1008, 'Paused'); } catch {}
+      return;
+    }
+
+    // ── Step 4: SSRF protection ───────────────────────────────────────────────
+    if (header.atyp === 0x03) {
+      if (!validateHostname(header.host)) {
+        try { ws.close(1008, 'Invalid hostname'); } catch {}
+        return;
+      }
+    }
+    if (isBlockedHost(header.host)) {
+      try { ws.close(1008, 'Blocked host'); } catch {}
+      return;
+    }
+
+    // ── Step 5: establish outbound TCP connection ─────────────────────────────
+    if (DEBUG) console.log('[trojan] connecting to', header.host, header.port);
+    let socket;
+    try {
+      socket = connect({ hostname: header.host, port: header.port });
+    } catch (e) {
+      if (DEBUG) console.error('[trojan] connect error:', e);
+      try { ws.close(1011, 'Connect failed'); } catch {}
+      return;
+    }
+    if (DEBUG) console.log('[trojan] TCP connected, starting pipe');
+
+    // Notify portal (fire-and-forget)
+    notifyPortal(RELAY_ID, 'connect', PORTAL_URL, RELAY_SECRET);
+
+    // Any payload bytes that arrived in the same buffer after the header
+    const initialData = header.dataOffset < buffer.length
+      ? buffer.slice(header.dataOffset)
+      : null;
+
+    // ── Step 6: bidirectional pipe ────────────────────────────────────────────
+    // reader is already set up and buffering frames — pass it directly
+    await pipeStreams(ws, socket, reader, initialData);
+
+  } finally {
+    clearTimeout(headerTimeout);
+    ws.removeEventListener('message', onMessage);
+    ws.removeEventListener('close', onWsClose);
+    ws.removeEventListener('error', onWsError);
+    try { reader.releaseLock(); } catch {}
   }
-  if (isBlockedHost(header.host)) {
-    try { ws.close(1008, 'Blocked host'); } catch {}
-    return;
-  }
-
-  // Establish outbound TCP connection
-  let socket;
-  try {
-    socket = connect({ hostname: header.host, port: header.port });
-  } catch {
-    try { ws.close(1011, 'Connect failed'); } catch {}
-    return;
-  }
-
-  // Notify portal (fire-and-forget; ignore errors)
-  notifyPortal(RELAY_ID, 'connect', PORTAL_URL, RELAY_SECRET);
-
-  const initialData = header.dataOffset < firstData.length
-    ? firstData.slice(header.dataOffset)
-    : null;
-
-  await pipeStreams(ws, socket, initialData);
 }
 
 // ─── Main fetch handler ───────────────────────────────────────────────────────
@@ -395,7 +425,8 @@ export default {
     }
 
     // Trojan-over-WebSocket
-    if (url.pathname === '/trojan' && request.headers.get('Upgrade') === 'websocket') {
+    // Accept /trojan, /trojan/, /trojan?ed=2048, etc.
+    if (url.pathname.startsWith('/trojan') && request.headers.get('Upgrade') === 'websocket') {
       const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
 
       if (rateLimitCheck(ip)) {

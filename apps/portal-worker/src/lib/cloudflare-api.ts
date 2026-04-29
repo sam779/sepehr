@@ -3,7 +3,7 @@
  * Handles relay Worker deployment: validate creds → build script → upload → enable subdomain.
  */
 
-import { encryptAES256GCM, sha256hex, generateToken, generateId } from '@sepehr/crypto';
+import { encryptAES256GCM, decryptAES256GCM, sha256hex, generateToken, generateId } from '@sepehr/crypto';
 import { buildRelayScript } from './relay-template.js';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
@@ -63,6 +63,34 @@ export async function deployRelayWorker(opts: DeployOptions): Promise<DeployResu
     .run();
 
   return { relayId: relayId2, workerName, workerUrl };
+}
+
+interface RedeployOptions {
+  relayId: string;
+  workerName: string;
+  cfAccountId: string;
+  cfApiTokenEnc: string;
+  cfIv: string;
+  db: D1Database;
+  encryptionKey: string;
+  portalUrl: string;
+}
+
+export async function redeployRelayWorker(opts: RedeployOptions): Promise<void> {
+  const { relayId, workerName, cfAccountId, cfApiTokenEnc, cfIv, db, encryptionKey, portalUrl } = opts;
+
+  const cfApiToken = await decryptAES256GCM(cfApiTokenEnc, cfIv, encryptionKey);
+
+  const relaySecret = generateToken(32);
+  const script = buildRelayScript({ relayId, portalUrl, relaySecret });
+
+  await uploadWorker(cfAccountId, workerName, script, cfApiToken);
+
+  const relaySecretHash = await sha256hex(relaySecret);
+  await db
+    .prepare('UPDATE relays SET relay_secret_hash = ? WHERE id = ?')
+    .bind(relaySecretHash, relayId)
+    .run();
 }
 
 // ─── CF API helpers ───────────────────────────────────────────────────────────

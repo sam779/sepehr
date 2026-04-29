@@ -10,7 +10,7 @@ import {
 import type { Env } from '../index.js';
 import type { Variables } from '../middleware/auth.js';
 import { sessionAuth } from '../middleware/auth.js';
-import { deployRelayWorker } from '../lib/cloudflare-api.js';
+import { deployRelayWorker, redeployRelayWorker } from '../lib/cloudflare-api.js';
 import type {
   DeployRelayRequest,
   CreateRelayUserRequest,
@@ -113,6 +113,39 @@ relayRoutes.post('/deploy', sessionAuth, async (c) => {
     return c.json({ ok: true, data: result }, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Deployment failed';
+    return c.json({ ok: false, error: message }, 422);
+  }
+});
+
+// ─── POST /relay/redeploy ─────────────────────────────────────────────────────
+// Re-uploads the relay Worker script (latest template + fresh relaySecret).
+// Worker URL and family member passwords are preserved — no QR re-scans needed.
+
+relayRoutes.post('/redeploy', sessionAuth, async (c) => {
+  const userId = c.get('userId');
+
+  const relay = await c.env.DB.prepare(
+    'SELECT id, worker_name, cf_account_id, cf_api_token_enc, cf_iv FROM relays WHERE user_id = ?',
+  )
+    .bind(userId)
+    .first<RelayRow>();
+
+  if (!relay) return c.json({ ok: false, error: 'No relay found' }, 404);
+
+  try {
+    await redeployRelayWorker({
+      relayId: relay.id,
+      workerName: relay.worker_name,
+      cfAccountId: relay.cf_account_id,
+      cfApiTokenEnc: relay.cf_api_token_enc,
+      cfIv: relay.cf_iv,
+      db: c.env.DB,
+      encryptionKey: c.env.ENCRYPTION_KEY,
+      portalUrl: c.env.PORTAL_URL,
+    });
+    return c.json({ ok: true, data: undefined });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Redeploy failed';
     return c.json({ ok: false, error: message }, 422);
   }
 });

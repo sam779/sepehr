@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useRelay } from '../hooks/useRelay.js';
 import { useRelayUsers } from '../hooks/useRelayUsers.js';
-import { Wifi, WifiOff, Plus, Clock, Users, ArrowRight } from 'lucide-react';
+import { Wifi, WifiOff, Plus, Clock, Users, ArrowRight, RefreshCw } from 'lucide-react';
 
 function formatRelative(dateStr: string | null): string {
   if (!dateStr) return 'Never';
@@ -15,8 +16,10 @@ function formatRelative(dateStr: string | null): string {
 }
 
 export default function Dashboard() {
-  const { relay, isLoading: relayLoading } = useRelay();
+  const { relay, isLoading: relayLoading, redeploy } = useRelay();
   const { users, isLoading: usersLoading } = useRelayUsers();
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [redeployError, setRedeployError] = useState<string | null>(null);
 
   if (relayLoading) {
     return (
@@ -62,8 +65,60 @@ export default function Dashboard() {
               <h2 className="font-semibold text-slate-100 text-lg">{relay.workerName}</h2>
               <p className="text-sm text-slate-400 mt-0.5">{relay.workerUrl}</p>
             </div>
-            <Wifi size={24} style={{ color: '#06b6d4' }} />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setRedeployError(null); setShowConfirm(true); }}
+                disabled={redeploy.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+                style={{ background: 'rgba(6,182,212,0.1)', color: '#06b6d4', border: '1px solid rgba(6,182,212,0.2)' }}
+                title="Re-upload relay script with latest fixes"
+              >
+                <RefreshCw size={13} className={redeploy.isPending ? 'animate-spin' : ''} />
+                Redeploy
+              </button>
+              <Wifi size={24} style={{ color: '#06b6d4' }} />
+            </div>
           </div>
+
+          {/* Redeploy confirmation */}
+          {showConfirm && (
+            <div className="mt-4 rounded-xl p-4" style={{ background: '#1e293b', border: '1px solid rgba(245,158,11,0.3)' }}>
+              <p className="text-sm text-slate-200 mb-1 font-medium">Re-upload relay script?</p>
+              <p className="text-xs text-slate-400 mb-3">
+                This re-uploads the Worker code with the latest fixes. Your existing family members
+                and their QR codes continue to work — no rescans needed.
+              </p>
+              {redeployError && (
+                <p className="text-xs mb-3" style={{ color: '#f87171' }}>{redeployError}</p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    setRedeployError(null);
+                    try {
+                      await redeploy.mutateAsync();
+                      setShowConfirm(false);
+                    } catch (err) {
+                      setRedeployError(err instanceof Error ? err.message : 'Redeploy failed');
+                    }
+                  }}
+                  disabled={redeploy.isPending}
+                  className="px-4 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                  style={{ background: '#06b6d4' }}
+                >
+                  {redeploy.isPending ? 'Redeploying…' : 'Confirm Redeploy'}
+                </button>
+                <button
+                  onClick={() => setShowConfirm(false)}
+                  disabled={redeploy.isPending}
+                  className="px-4 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
+                  style={{ background: 'rgba(51,65,85,0.5)', color: '#94a3b8' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4 mt-6">
             <div className="rounded-xl p-4" style={{ background: '#1e293b' }}>

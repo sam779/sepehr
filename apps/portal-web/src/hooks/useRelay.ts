@@ -23,6 +23,14 @@ export function useRelay() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['relay'] }),
   });
 
+  const redeploy = useMutation({
+    mutationFn: async () => {
+      const res = await api.relay.redeploy();
+      if (!res.ok) throw new Error(res.error);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['relay'] }),
+  });
+
   const remove = useMutation({
     mutationFn: async () => {
       const res = await api.relay.delete();
@@ -34,5 +42,5 @@ export function useRelay() {
     },
   });
 
-  return { relay: query.data ?? null, isLoading: query.isLoading, deploy, remove };
+  return { relay: query.data ?? null, isLoading: query.isLoading, deploy, redeploy, remove };
 }
