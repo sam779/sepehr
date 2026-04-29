@@ -127,6 +127,19 @@ async function uploadWorker(
     compatibility_flags: [] as string[],
     bindings: [] as unknown[],
     usage_model: 'bundled',
+    observability: {
+      enabled: false,
+      head_sampling_rate: 1,
+      logs: {
+        enabled: true,
+        head_sampling_rate: 1,
+        invocation_logs: true,
+      },
+      traces: {
+        enabled: false,
+        head_sampling_rate: 1,
+      },
+    },
   };
 
   const form = new FormData();

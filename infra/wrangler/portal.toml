@@ -18,3 +18,18 @@ database_id = "0207372d-6dd0-43a8-8eaa-4e8ad8471239"
 
 [vars]
 PORTAL_URL = "https://portal-api.blackoutobservatory.org"
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+# [observability.traces] requires wrangler v4+
+# enabled = false
+# persist = true
+# head_sampling_rate = 1
