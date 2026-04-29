@@ -423,22 +423,27 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
 
+    // Unconditional request log — always visible in CF Worker logs
+    console.log('[req]', request.method, url.pathname,
+      'Upgrade:', request.headers.get('Upgrade') ?? '(none)');
+
     // Health check
     if (url.pathname === '/health') {
       return Response.json({ status: 'ok', relay_id: RELAY_ID });
     }
 
-    // Trojan-over-WebSocket
-    // Accept /trojan, /trojan/, /trojan?ed=2048, etc.
-    if (url.pathname.startsWith('/trojan')) {
-      const upgrade = request.headers.get('Upgrade');
-      if (DEBUG) console.log('[fetch] /trojan Upgrade:', upgrade);
+    // Trojan-over-WebSocket — exact match + prefix for ed= variants
+    if (url.pathname === '/trojan' || url.pathname.startsWith('/trojan/') || url.pathname.startsWith('/trojan?')) {
+      console.log('[trojan] path hit, Upgrade:', request.headers.get('Upgrade') ?? '(none)');
 
+      const upgrade = request.headers.get('Upgrade');
       if (upgrade !== 'websocket') {
+        console.log('[trojan] missing WebSocket upgrade, returning 400');
         return new Response('Expected WebSocket upgrade', { status: 400 });
       }
 
       const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+      console.log('[trojan] upgrade OK, ip:', ip);
 
       if (rateLimitCheck(ip)) {
         return new Response('Rate limit exceeded', { status: 429 });
@@ -456,6 +461,8 @@ export default {
       return new Response(null, { status: 101, webSocket: client });
     }
 
+    // Catch-all: log unmatched paths to help debug routing
+    console.log('[unmatched]', url.pathname);
     return new Response('Not found', { status: 404 });
   },
 };
