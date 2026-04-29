@@ -295,6 +295,10 @@ function closeBothSides(ws, socket) {
 
 // ─── Trojan handler ──────────────────────────────────────────────────────────
 async function handleTrojanSession(ws, ip) {
+  // Accept the WebSocket upgrade — must be called before any await
+  ws.accept();
+  if (DEBUG) console.log('[ws] accepted, ip:', ip);
+
   // Queue ALL incoming WS frames from the very start so we don't miss frames
   // that arrive while we are parsing the header asynchronously.
   const { readable, writable } = new TransformStream();
@@ -426,17 +430,25 @@ export default {
 
     // Trojan-over-WebSocket
     // Accept /trojan, /trojan/, /trojan?ed=2048, etc.
-    if (url.pathname.startsWith('/trojan') && request.headers.get('Upgrade') === 'websocket') {
+    if (url.pathname.startsWith('/trojan')) {
+      const upgrade = request.headers.get('Upgrade');
+      if (DEBUG) console.log('[fetch] /trojan Upgrade:', upgrade);
+
+      if (upgrade !== 'websocket') {
+        return new Response('Expected WebSocket upgrade', { status: 400 });
+      }
+
       const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
 
       if (rateLimitCheck(ip)) {
         return new Response('Rate limit exceeded', { status: 429 });
       }
 
-      const [client, server] = Object.values(new WebSocketPair());
-      server.accept();
+      const pair = new WebSocketPair();
+      const client = pair[0];
+      const server = pair[1];
 
-      // Run in background — do not await so the 101 response is returned immediately
+      // ws.accept() is called inside handleTrojanSession before any await
       handleTrojanSession(server, ip).catch(() => {
         try { server.close(1011, 'Internal error'); } catch {}
       });
