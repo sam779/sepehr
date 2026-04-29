@@ -18,9 +18,6 @@ database_id = "0207372d-6dd0-43a8-8eaa-4e8ad8471239"
 
 [vars]
 PORTAL_URL = "https://portal-api.blackoutobservatory.org"
-# Set the real values via: wrangler secret put VPS_RELAY_URL  /  wrangler secret put VPS_TUNNEL_SECRET
-VPS_RELAY_URL = "https://YOUR_VPS_IP:8080/tunnel"
-# VPS_TUNNEL_SECRET — set only via wrangler secret put, never committed to source
 
 [observability]
 enabled = false

@@ -13,7 +13,7 @@ const schema = z.object({
 type FormValues = z.infer<typeof schema>;
 
 const CF_TOKEN_PERMS =
-  'Workers Scripts: Edit, Account Settings: Read';
+  'Workers Scripts: Edit, Account: Read';
 
 const steps = [
   'Create API token',
@@ -70,6 +70,9 @@ export default function Setup() {
         <h1 className="text-2xl font-bold text-slate-100">Deploy Your Relay</h1>
         <p className="text-slate-400 mt-1">
           Your relay runs on your own free Cloudflare account.
+        </p>
+        <p className="text-slate-500 mt-1 text-sm">
+          No VPS, no external servers, no extra infrastructure.
         </p>
       </div>
 

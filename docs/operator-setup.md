@@ -2,6 +2,12 @@
 
 This guide walks you through deploying Sepehr from scratch: creating a Cloudflare account, deploying the portal Worker, and going live.
 
+Sepehr is Cloudflare-native in production:
+- Runtime: Cloudflare Workers only
+- Data: Cloudflare D1 only
+- Frontend hosting: Cloudflare Pages only
+- No VPS, no external relay servers, no Node.js backend outside Workers
+
 ---
 
 ## Prerequisites
@@ -56,10 +62,12 @@ database_id = "<paste here>"
 # Local dev
 npx wrangler d1 execute sepehr-portal --local --file database/migrations/0001_initial.sql
 npx wrangler d1 execute sepehr-portal --local --file database/migrations/0002_rate_limits.sql
+npx wrangler d1 execute sepehr-portal --local --file database/migrations/0003_password_hash.sql
 
 # Production
 npx wrangler d1 execute sepehr-portal --file database/migrations/0001_initial.sql
 npx wrangler d1 execute sepehr-portal --file database/migrations/0002_rate_limits.sql
+npx wrangler d1 execute sepehr-portal --file database/migrations/0003_password_hash.sql
 ```
 
 ---

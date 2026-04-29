@@ -8,6 +8,12 @@ This document describes the Trojan-over-WebSocket relay Worker and its interacti
 
 Each user's relay is a Cloudflare Worker deployed to their own Cloudflare account. It accepts incoming WebSocket connections from proxy clients (Shadowrocket, v2rayNG, Clash) using the Trojan protocol over WebSocket+TLS, and forwards traffic to the open internet using `cloudflare:sockets`.
 
+The relay is fully self-contained in Cloudflare infrastructure:
+- Inbound runtime: Cloudflare Workers
+- Outbound TCP: `cloudflare:sockets`
+- Auth/metadata checks: portal Worker + D1
+- No VPS, no external relay servers, no multi-hop layers
+
 ---
 
 ## WebSocket endpoint
@@ -34,8 +40,9 @@ After the WebSocket handshake, the client sends the first frame containing:
 
 ### Password
 
-- Plaintext UTF-8 string
-- Compared using constant-time `timingSafeEqual()` (XOR all bytes)
+- Trojan clients send `SHA224(password)` as a lowercase 56-char hex string
+- Relay forwards this value to portal unchanged as `hash`
+- Portal compares `hash` against `relay_users.password_hash`
 
 ### CMD
 
@@ -105,19 +112,19 @@ Before connecting to any address, the relay validates:
 On each new WebSocket connection, after parsing the Trojan header, the relay calls the portal:
 
 ```
-POST https://<portal-url>/api/relay/check
+POST https://<portal-url>/relay/check
 Authorization: Bearer <relaySecret>
 Content-Type: application/json
 
 {
-  "relayId": "...",
-  "trojanPassword": "<parsed from frame>"
+  "relay_id": "...",
+  "hash": "<sha224 from Trojan first line>"
 }
 ```
 
-Response:
+Response (current runtime shape):
 ```json
-{ "ok": true, "data": { "allowed": true } }
+{ "valid": true, "paused": false }
 ```
 
 - Timeout: 500 ms
@@ -137,17 +144,17 @@ The relay secret is a 32-byte random token generated at deploy time. It is:
 After a connection is authenticated, the relay fires a notification (fire-and-forget):
 
 ```
-POST https://<portal-url>/api/relay/notify
+POST https://<portal-url>/relay/notify
 Authorization: Bearer <relaySecret>
 Content-Type: application/json
 
 {
-  "relayId": "...",
-  "trojanPassword": "<password of connected user>"
+  "relay_id": "...",
+  "event": "connect"
 }
 ```
 
-The portal upserts `last_seen_at` on the matching relay user. Failures are silently ignored.
+The portal updates `last_seen_at` for active, non-paused users on the relay. Failures are silently ignored.
 
 ---
 
@@ -166,13 +173,15 @@ In-memory per-IP rate limit on the relay: **10 WebSocket connections per 5 minut
 After authentication and SSRF checks:
 
 1. Relay opens a TCP socket via `cloudflare:sockets` to the target host:port
-2. The initial payload (bytes after the Trojan header) is sent first to preserve order
-3. Bidirectional stream via `TransformStream`:
+2. Relay waits for `socket.opened` before starting any stream piping
+3. If socket readiness exceeds 5s, relay fails fast (`[tcp] timeout`) and closes both sides
+4. The initial payload (bytes after the Trojan header) is sent first to preserve order
+5. Bidirectional stream via Web Streams:
    - WS messages → TCP socket
    - TCP socket → WS messages
-4. Idle timeout: **5 minutes** (no data in either direction)
-5. Hard timeout: **1 hour** (absolute connection limit)
-6. On any close/error: `closeBothSides()` runs in `finally` block
+6. Idle timeout: **5 minutes** (no data in either direction)
+7. Hard timeout: **1 hour** (absolute connection limit)
+8. On any close/error: `closeBothSides()` runs in `finally` block
 
 ---
 
