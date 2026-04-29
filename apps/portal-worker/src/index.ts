@@ -8,6 +8,8 @@ export interface Env {
   ENCRYPTION_KEY: string;
   RESEND_API_KEY: string;
   PORTAL_URL: string;
+  VPS_RELAY_URL: string;    // WebSocket URL of the VPS relay, e.g. https://1.2.3.4:8080/tunnel
+  VPS_TUNNEL_SECRET: string; // HMAC-SHA256 shared secret for session tokens
 }
 
 const app = new Hono<{ Bindings: Env }>();

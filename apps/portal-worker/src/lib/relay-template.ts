@@ -2,36 +2,49 @@
  * Relay Worker template.
  *
  * buildRelayScript() returns a complete, self-contained Cloudflare Workers ES module
- * that proxies Trojan-over-WebSocket connections using cloudflare:sockets for outbound TCP.
+ * that proxies Trojan-over-WebSocket connections by forwarding them to a VPS relay
+ * server over a second WebSocket connection.  The VPS relay opens the outbound TCP
+ * connection; the Worker is control-plane only.
  *
  * Security properties:
  *  - Constant-time password comparison (timingSafeEqual)
- *  - Full SSRF protection: RFC1918 + link-local + cloud metadata CIDR blocks
+ *  - Full SSRF protection enforced on both Worker and VPS
  *  - In-memory rate limiting: 10 WS / 5 min / IP
  *  - Frame guards: >16KB first frame → immediate close
  *  - Fail-open on portal downtime (so users aren't locked out)
  *  - UDP CMD (0x03) rejected with WS 1003
- *  - Idle 5-min + hard 1-h timeouts with graceful closeBothSides()
+ *  - Idle 5-min + hard 1-h timeouts
+ *  - Short-lived HMAC session tokens (30 s TTL) for VPS authentication
  */
 
 export interface RelayScriptParams {
   relayId: string;
   portalUrl: string;
   relaySecret: string;
+  vpsRelayUrl: string;    // e.g. "https://1.2.3.4:8080/tunnel" (fetch upgrade → WS)
+  vpsTunnelSecret: string; // HMAC-SHA256 shared secret for session tokens
 }
 
-export function buildRelayScript({ relayId, portalUrl, relaySecret }: RelayScriptParams): string {
+export function buildRelayScript({
+  relayId,
+  portalUrl,
+  relaySecret,
+  vpsRelayUrl,
+  vpsTunnelSecret,
+}: RelayScriptParams): string {
   // JSON.stringify ensures the strings are safely embedded as JS string literals
   const RELAY_ID = JSON.stringify(relayId);
   const PORTAL_URL = JSON.stringify(portalUrl);
   const RELAY_SECRET = JSON.stringify(relaySecret);
+  const VPS_RELAY_URL = JSON.stringify(vpsRelayUrl);
+  const VPS_TUNNEL_SECRET = JSON.stringify(vpsTunnelSecret);
 
   return `
-import { connect } from 'cloudflare:sockets';
-
 const RELAY_ID = ${RELAY_ID};
 const PORTAL_URL = ${PORTAL_URL};
 const RELAY_SECRET = ${RELAY_SECRET};
+const VPS_RELAY_URL = ${VPS_RELAY_URL};
+const VPS_TUNNEL_SECRET = ${VPS_TUNNEL_SECRET};
 const DEBUG = false; // set to true for verbose connection logs
 
 // ─── In-memory rate limit (resets per-isolate restart) ───────────────────────
@@ -244,118 +257,172 @@ function bytesToHex(bytes) {
     .join(' ');
 }
 
-function createWsReadable(reader, initialData) {
-  let sentInitialData = false;
+// ─── Session token for VPS authentication ────────────────────────────────────
+// Generates a short-lived HMAC-SHA256 signed token so the VPS can verify that
+// this Worker is authorised to open a tunnel to host:port.
+// TTL = 30 s — long enough to survive Worker→VPS round-trip latency.
+async function generateSessionToken(host, port, tunnelSecret) {
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(12)))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+  const expiry = Date.now() + 30_000;
+  const payload = JSON.stringify({ host, port, expiry, nonce });
 
-  return new ReadableStream({
-    async pull(controller) {
-      if (!sentInitialData) {
-        sentInitialData = true;
-        if (initialData && initialData.length > 0) {
-          controller.enqueue(initialData);
-          return;
-        }
-      }
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(tunnelSecret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  const sig = Array.from(new Uint8Array(sigBuf))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
 
-      const { done, value } = await reader.read();
-      if (done) {
-        controller.close();
-        return;
-      }
-      controller.enqueue(value);
-    },
-    cancel() {
-      try { reader.cancel(); } catch {}
-    },
-  });
+  // base64url encode the envelope so it's safe as a JSON string value
+  const envelope = JSON.stringify({ payload, sig });
+  return btoa(envelope).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
 }
 
-function createWsWritable(ws) {
-  return new WritableStream({
-    write(chunk) {
-      if (ws.readyState !== WebSocket.OPEN) {
-        throw new Error('WebSocket not open for outbound send');
-      }
-      ws.send(toUint8Array(chunk));
-    },
-    close() {
-      try { ws.close(1000, 'done'); } catch {}
-    },
-    abort(reason) {
-      console.error('[pipe tcp→ws] abort:', String(reason));
-      try { ws.close(1011, 'Pipe aborted'); } catch {}
+// ─── Connect to VPS relay and perform handshake ───────────────────────────────
+// CF Workers outbound WebSocket: use fetch() with Upgrade: websocket header.
+// Returns the accepted WebSocket after the VPS has confirmed TCP is ready.
+async function connectToVps(host, port) {
+  const token = await generateSessionToken(host, port, VPS_TUNNEL_SECRET);
+
+  // CF Workers outbound WS via fetch upgrade
+  const response = await fetch(VPS_RELAY_URL, {
+    headers: {
+      'Upgrade': 'websocket',
+      'Connection': 'Upgrade',
     },
   });
+
+  if (response.status !== 101) {
+    throw new Error('VPS WS upgrade failed: ' + response.status);
+  }
+
+  const vpsWs = response.webSocket;
+  if (!vpsWs) throw new Error('response.webSocket not available');
+
+  vpsWs.accept();
+
+  // Wait for ack ({status:'ok'}) before returning — the VPS sends this once
+  // the TCP connection to host:port is established.
+  const ack = await new Promise((resolve, reject) => {
+    const tid = setTimeout(() => reject(new Error('VPS handshake timeout')), 8_000);
+
+    vpsWs.addEventListener('message', (event) => {
+      clearTimeout(tid);
+      try { resolve(JSON.parse(event.data)); }
+      catch { reject(new Error('VPS ack parse error')); }
+    });
+    vpsWs.addEventListener('error', () => {
+      clearTimeout(tid);
+      reject(new Error('VPS WS error during handshake'));
+    });
+    vpsWs.addEventListener('close', () => {
+      clearTimeout(tid);
+      reject(new Error('VPS WS closed before ack'));
+    });
+
+    // Send the connect command — VPS will open TCP then reply {status:'ok'}
+    vpsWs.send(JSON.stringify({ type: 'connect', token, host, port }));
+  });
+
+  if (!ack || ack.status !== 'ok') {
+    vpsWs.close(1011, 'VPS rejected');
+    throw new Error('VPS rejected: ' + JSON.stringify(ack));
+  }
+
+  return vpsWs;
 }
 
-// ─── Bidirectional pipe: WS ↔ TCP ────────────────────────────────────────────
-async function pipeStreams(ws, socket, reader, initialData) {
+// ─── Bidirectional pipe: client WS ↔ VPS WS ──────────────────────────────────
+// reader  — the TransformStream reader that yields client WS frames as Uint8Arrays
+// initialData — payload bytes that arrived in the same frame as the Trojan header
+async function pipeWsToWs(clientWs, vpsWs, reader, initialData) {
   const IDLE_MS = 5 * 60 * 1000;
   const HARD_MS = 60 * 60 * 1000;
   let idleHandle;
-  let loggedOutboundPreview = false;
+  let finished = false;
+
+  let resolveFinish;
+  const donePromise = new Promise(r => { resolveFinish = r; });
+
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(idleHandle);
+    clearTimeout(hardHandle);
+    try { clientWs.close(1000, 'done'); } catch {}
+    try { vpsWs.close(1000, 'done'); } catch {}
+    resolveFinish();
+  };
 
   const resetIdle = () => {
     clearTimeout(idleHandle);
-    idleHandle = setTimeout(() => closeBothSides(ws, socket), IDLE_MS);
+    idleHandle = setTimeout(() => {
+      console.log('[pipe] idle timeout');
+      finish();
+    }, IDLE_MS);
   };
   resetIdle();
-  const hardHandle = setTimeout(() => closeBothSides(ws, socket), HARD_MS);
+  const hardHandle = setTimeout(() => {
+    console.log('[pipe] hard timeout');
+    finish();
+  }, HARD_MS);
 
-  const wsReadable = createWsReadable(reader, initialData).pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      const bytes = toUint8Array(chunk);
-      if (bytes.length > 0 && !loggedOutboundPreview) {
-        loggedOutboundPreview = true;
-        console.log('[pipe ws→tcp] first 16 bytes:', bytesToHex(bytes.slice(0, 16)));
-      }
-      if (bytes.length > 0) {
-        console.log('[pipe ws→tcp]', bytes.length, 'bytes');
+  // VPS → client: attach a message listener (event-driven, non-blocking)
+  vpsWs.addEventListener('message', (event) => {
+    resetIdle();
+    const chunk = toUint8Array(event.data);
+    if (chunk.length === 0) return;
+    console.log('[pipe vps→client]', chunk.length, 'bytes');
+    try { clientWs.send(chunk); } catch (e) {
+      console.error('[pipe vps→client] send error:', String(e));
+      finish();
+    }
+  });
+  vpsWs.addEventListener('close', () => { console.log('[pipe] vps closed'); finish(); });
+  vpsWs.addEventListener('error', (e) => {
+    console.error('[pipe] vps error:', String(e));
+    finish();
+  });
+
+  // client → VPS: read from the TransformStream reader asynchronously
+  const forwardClientToVps = async () => {
+    try {
+      // Forward any payload that arrived with the Trojan header
+      if (initialData && initialData.length > 0) {
+        console.log('[pipe client→vps] initial', initialData.length, 'bytes');
+        vpsWs.send(initialData);
         resetIdle();
       }
-      controller.enqueue(bytes);
-    },
-    flush() {
-      console.log('[pipe ws→tcp] readable closed');
-    },
-  }));
 
-  const wsWritable = createWsWritable(ws);
+      while (!finished) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log('[pipe client→vps] reader done');
+          break;
+        }
+        resetIdle();
+        const chunk = toUint8Array(value);
+        if (chunk.length === 0) continue;
+        console.log('[pipe client→vps]', chunk.length, 'bytes');
+        try { vpsWs.send(chunk); } catch (e) {
+          console.error('[pipe client→vps] vps send error:', String(e));
+          break;
+        }
+      }
+    } catch (e) {
+      console.error('[pipe client→vps] error:', String(e));
+    } finally {
+      finish();
+    }
+  };
 
-  const wsToSocket = wsReadable.pipeTo(socket.writable).catch((e) => {
-    console.error('[pipe ws→tcp] error:', String(e));
-    throw e;
-  });
-
-  const socketToWs = socket.readable.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      const bytes = toUint8Array(chunk);
-      if (bytes.length === 0) return;
-      resetIdle();
-      console.log('[pipe tcp→ws]', bytes.length, 'bytes');
-      controller.enqueue(bytes);
-    },
-    flush() {
-      console.log('[pipe tcp→ws] socket readable closed');
-    },
-  })).pipeTo(wsWritable).catch((e) => {
-    console.error('[pipe tcp→ws] error:', String(e));
-    throw e;
-  });
-
-  try {
-    console.log('[pipe] start');
-    await Promise.race([wsToSocket, socketToWs]);
-  } finally {
-    clearTimeout(idleHandle);
-    clearTimeout(hardHandle);
-    closeBothSides(ws, socket);
-  }
-}
-
-function closeBothSides(ws, socket) {
-  try { ws.close(1000, 'done'); } catch {}
-  try { socket.close(); } catch {}
+  forwardClientToVps(); // fire without await — races with donePromise
+  await donePromise;
 }
 
 // ─── Trojan handler ──────────────────────────────────────────────────────────
@@ -443,6 +510,7 @@ async function handleTrojanSession(ws, ip) {
       console.log('[access] valid:', valid, 'paused:', paused);
       if (!valid) { try { ws.close(1008, 'Unauthorized'); } catch {} return; }
       if (paused)  { try { ws.close(1008, 'Paused');       } catch {} return; }
+      console.log('[access] passed');
 
       // ── SSRF protection ────────────────────────────────────────────────────
       if (header.atyp === 0x03 && !validateHostname(header.host)) {
@@ -456,45 +524,16 @@ async function handleTrojanSession(ws, ip) {
         return;
       }
 
-      // ── Establish outbound TCP connection ──────────────────────────────────
-      console.log('[tcp] connecting to', header.host + ':' + header.port);
-      let socket;
+      // ── Connect to VPS relay ───────────────────────────────────────────────
+      console.log('[vps] connecting  host:', header.host, 'port:', header.port);
+      let vpsWs;
       try {
-        socket = connect({ hostname: header.host, port: header.port });
+        vpsWs = await connectToVps(header.host, header.port);
+        console.log('[vps] tunnel ready  host:', header.host, 'port:', header.port);
       } catch (e) {
-        console.error('[tcp] connect threw:', String(e));
-        try { ws.close(1011, 'Connect failed'); } catch {}
-        return;
-      }
-
-      socket.opened.then((info) => {
-        console.log(
-          '[tcp] connected',
-          'remote:', info.remoteAddress ?? '(unknown)',
-          'local:', info.localAddress ?? '(unknown)',
-          'wsReadyState:', ws.readyState,
-        );
-      }).catch((e) => {
-        console.error('[tcp] opened rejected:', String(e));
-      });
-      socket.closed.then(() => {
-        console.log('[tcp] closed cleanly');
-      }).catch((e) => {
-        console.error('[tcp] closed with error:', String(e));
-      });
-
-      try {
-        const info = await socket.opened;
-        console.log(
-          '[tcp] connected',
-          'remote:', info.remoteAddress ?? '(unknown)',
-          'local:', info.localAddress ?? '(unknown)',
-          'wsReadyState:', ws.readyState,
-        );
-      } catch (e) {
-        console.error('[tcp] connect failed before pipe:', String(e));
-        try { ws.close(1011, 'Connect failed'); } catch {}
-        await socket.close().catch(() => {});
+        console.error('[vps] connect failed:', String(e),
+          'host:', header.host, 'port:', header.port);
+        try { ws.close(1011, 'RELAY_UNAVAILABLE'); } catch {}
         return;
       }
 
@@ -507,7 +546,8 @@ async function handleTrojanSession(ws, ip) {
       console.log('[pipe] initialData:', initialData ? initialData.length : 0, 'bytes');
 
       // ── Bidirectional pipe ─────────────────────────────────────────────────
-      await pipeStreams(ws, socket, reader, initialData);
+      console.log('[pipe] start  host:', header.host, 'port:', header.port);
+      await pipeWsToWs(ws, vpsWs, reader, initialData);
 
     } finally {
       clearTimeout(headerTimeoutHandle);

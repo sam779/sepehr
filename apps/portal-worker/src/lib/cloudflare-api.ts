@@ -16,6 +16,8 @@ interface DeployOptions {
   db: D1Database;
   encryptionKey: string;
   portalUrl: string;
+  vpsRelayUrl: string;
+  vpsTunnelSecret: string;
 }
 
 interface DeployResult {
@@ -25,7 +27,7 @@ interface DeployResult {
 }
 
 export async function deployRelayWorker(opts: DeployOptions): Promise<DeployResult> {
-  const { userId, cfAccountId, cfApiToken, db, encryptionKey, portalUrl } = opts;
+  const { userId, cfAccountId, cfApiToken, db, encryptionKey, portalUrl, vpsRelayUrl, vpsTunnelSecret } = opts;
 
   // Step 1 — Validate token + get workers.dev subdomain
   const subdomain = await getWorkersSubdomain(cfAccountId, cfApiToken);
@@ -37,7 +39,7 @@ export async function deployRelayWorker(opts: DeployOptions): Promise<DeployResu
   const relaySecret = generateToken(32);
 
   // Step 3 — Build relay script
-  const script = buildRelayScript({ relayId, portalUrl, relaySecret });
+  const script = buildRelayScript({ relayId, portalUrl, relaySecret, vpsRelayUrl, vpsTunnelSecret });
 
   // Step 4 — Upload Worker
   await uploadWorker(cfAccountId, workerName, script, cfApiToken);
@@ -74,15 +76,17 @@ interface RedeployOptions {
   db: D1Database;
   encryptionKey: string;
   portalUrl: string;
+  vpsRelayUrl: string;
+  vpsTunnelSecret: string;
 }
 
 export async function redeployRelayWorker(opts: RedeployOptions): Promise<void> {
-  const { relayId, workerName, cfAccountId, cfApiTokenEnc, cfIv, db, encryptionKey, portalUrl } = opts;
+  const { relayId, workerName, cfAccountId, cfApiTokenEnc, cfIv, db, encryptionKey, portalUrl, vpsRelayUrl, vpsTunnelSecret } = opts;
 
   const cfApiToken = await decryptAES256GCM(cfApiTokenEnc, cfIv, encryptionKey);
 
   const relaySecret = generateToken(32);
-  const script = buildRelayScript({ relayId, portalUrl, relaySecret });
+  const script = buildRelayScript({ relayId, portalUrl, relaySecret, vpsRelayUrl, vpsTunnelSecret });
 
   await uploadWorker(cfAccountId, workerName, script, cfApiToken);
 

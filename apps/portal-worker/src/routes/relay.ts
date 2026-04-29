@@ -110,6 +110,8 @@ relayRoutes.post('/deploy', sessionAuth, async (c) => {
       db: c.env.DB,
       encryptionKey: c.env.ENCRYPTION_KEY,
       portalUrl: c.env.PORTAL_URL,
+      vpsRelayUrl: c.env.VPS_RELAY_URL,
+      vpsTunnelSecret: c.env.VPS_TUNNEL_SECRET,
     });
     return c.json({ ok: true, data: result }, 201);
   } catch (err) {
@@ -143,6 +145,8 @@ relayRoutes.post('/redeploy', sessionAuth, async (c) => {
       db: c.env.DB,
       encryptionKey: c.env.ENCRYPTION_KEY,
       portalUrl: c.env.PORTAL_URL,
+      vpsRelayUrl: c.env.VPS_RELAY_URL,
+      vpsTunnelSecret: c.env.VPS_TUNNEL_SECRET,
     });
     return c.json({ ok: true, data: undefined });
   } catch (err) {
