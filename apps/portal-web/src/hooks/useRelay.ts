@@ -42,5 +42,5 @@ export function useRelay() {
     },
   });
 
-  return { relay: query.data ?? null, isLoading: query.isLoading, deploy, redeploy, remove };
+  return { relay: query.data ?? null, isLoading: query.isLoading, dataUpdatedAt: query.dataUpdatedAt, refetch: query.refetch, deploy, redeploy, remove };
 }

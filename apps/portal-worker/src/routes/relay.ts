@@ -43,6 +43,7 @@ interface RelayUserRow {
   is_active: number;
   is_paused: number;
   last_seen_at: string | null;
+  is_connected: number;
   created_at: string;
 }
 
@@ -188,7 +189,7 @@ relayRoutes.get('/users', sessionAuth, async (c) => {
   if (!relay) return c.json({ ok: false, error: 'No relay found' }, 404);
 
   const { results } = await c.env.DB.prepare(
-    'SELECT id, display_name, is_active, is_paused, last_seen_at, created_at FROM relay_users WHERE relay_id = ? AND is_active = 1 ORDER BY created_at ASC',
+    'SELECT id, display_name, is_active, is_paused, is_connected, last_seen_at, created_at FROM relay_users WHERE relay_id = ? AND is_active = 1 ORDER BY created_at ASC',
   )
     .bind(relay.id)
     .all<RelayUserRow>();
@@ -398,14 +399,14 @@ relayRoutes.post('/check', async (c) => {
 
   // Compare incoming SHA224 hash directly against stored password_hash
   const user = await c.env.DB.prepare(
-    'SELECT is_paused FROM relay_users WHERE password_hash = ? AND relay_id = ? AND is_active = 1 LIMIT 1',
+    'SELECT id, is_paused FROM relay_users WHERE password_hash = ? AND relay_id = ? AND is_active = 1 LIMIT 1',
   )
     .bind(hash, relay_id)
-    .first<{ is_paused: number }>();
+    .first<{ id: string; is_paused: number }>();
 
   if (!user) return c.json({ valid: false, paused: false });
 
-  return c.json({ valid: true, paused: user.is_paused === 1 });
+  return c.json({ valid: true, paused: user.is_paused === 1, userId: user.id });
 });
 
 // ─── POST /api/relay/notify  (relay → portal, auth: Bearer <relay_secret>) ───
@@ -437,15 +438,21 @@ relayRoutes.post('/notify', async (c) => {
   if (secretHash !== relay.relay_secret_hash) return c.json({ ok: false }, 401);
 
   const now = new Date().toISOString();
-  await c.env.DB.prepare(
-    `UPDATE relay_users
-     SET last_seen_at = ?
-     WHERE relay_id = ? AND is_active = 1 AND is_paused = 0
-     ORDER BY last_seen_at DESC NULLS LAST
-     LIMIT 1`,
-  )
-    .bind(now, relay_id)
-    .run();
+  const { event, user_id } = body;
+
+  if (event === 'connect' && user_id) {
+    await c.env.DB.prepare(
+      'UPDATE relay_users SET is_connected = 1, last_seen_at = ? WHERE id = ? AND relay_id = ? AND is_active = 1',
+    )
+      .bind(now, user_id, relay_id)
+      .run();
+  } else if (event === 'disconnect' && user_id) {
+    await c.env.DB.prepare(
+      'UPDATE relay_users SET is_connected = 0 WHERE id = ? AND relay_id = ? AND is_active = 1',
+    )
+      .bind(user_id, relay_id)
+      .run();
+  }
 
   return c.json({ ok: true });
 });
@@ -489,6 +496,7 @@ function mapRelayUser(row: RelayUserRow) {
     displayName: row.display_name,
     isActive: row.is_active === 1,
     isPaused: row.is_paused === 1,
+    isConnected: row.is_connected === 1,
     lastSeenAt: row.last_seen_at ?? null,
     createdAt: row.created_at,
   };

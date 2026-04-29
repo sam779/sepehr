@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useRelay } from '../hooks/useRelay.js';
 import { useRelayUsers } from '../hooks/useRelayUsers.js';
-import { Wifi, WifiOff, Plus, Clock, Users, ArrowRight, RefreshCw } from 'lucide-react';
+import { Wifi, WifiOff, Plus, Clock, Users, ArrowRight, RefreshCw, Gauge, Activity, ExternalLink } from 'lucide-react';
 
 function formatRelative(dateStr: string | null): string {
   if (!dateStr) return 'Never';
@@ -16,10 +16,39 @@ function formatRelative(dateStr: string | null): string {
 }
 
 export default function Dashboard() {
-  const { relay, isLoading: relayLoading, redeploy } = useRelay();
-  const { users, isLoading: usersLoading } = useRelayUsers();
+  const { relay, isLoading: relayLoading, redeploy, dataUpdatedAt: relayUpdatedAt, refetch: refetchRelay } = useRelay();
+  const { users, isLoading: usersLoading, dataUpdatedAt: usersUpdatedAt, refetch: refetchUsers } = useRelayUsers();
   const [showConfirm, setShowConfirm] = useState(false);
   const [redeployError, setRedeployError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const lastFetchedAt = Math.max(relayUpdatedAt, usersUpdatedAt);
+  const lastFetchedLabel = lastFetchedAt
+    ? new Date(lastFetchedAt).toLocaleTimeString()
+    : 'Never';
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await Promise.all([refetchRelay(), refetchUsers()]);
+    setRefreshing(false);
+  };
+
+  const connectedNow = users.filter((u) => u.isConnected).length;
+  const recentActive = users.filter((u) => u.lastSeenAt && Date.now() - new Date(u.lastSeenAt).getTime() < 24 * 60 * 60_000).length;
+
+  const relayHealth = relay?.relayStatus === 'active'
+    ? connectedNow > 0
+      ? { label: 'Healthy', color: '#22c55e' }
+      : { label: 'Idle', color: '#f59e0b' }
+    : { label: 'Paused', color: '#f59e0b' };
+
+  const speed = relay?.relayStatus === 'active'
+    ? connectedNow > 0
+      ? 'Good'
+      : recentActive > 0
+        ? 'Moderate'
+        : 'Idle'
+    : 'Unavailable';
 
   if (relayLoading) {
     return (
@@ -31,9 +60,24 @@ export default function Dashboard() {
 
   return (
     <div className="p-8 max-w-4xl">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-100">Dashboard</h1>
-        <p className="text-slate-400 mt-1">Overview of your relay and connected family members.</p>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100">Dashboard</h1>
+          <p className="text-slate-400 mt-1">Overview of your relay and connected family members.</p>
+        </div>
+        <div className="flex items-center gap-2 mt-1">
+          <span className="text-xs text-slate-500">As of {lastFetchedLabel}</span>
+          <button
+            onClick={() => void handleRefresh()}
+            disabled={refreshing}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
+            style={{ background: 'rgba(6,182,212,0.08)', color: '#06b6d4', border: '1px solid rgba(6,182,212,0.2)' }}
+            title="Refresh activity data"
+          >
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Relay status */}
@@ -138,6 +182,84 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
+
+          <div className="grid sm:grid-cols-3 gap-4 mt-4">
+            <div className="rounded-xl p-4" style={{ background: '#1e293b' }}>
+              <div className="flex items-center gap-2 mb-1 text-xs text-slate-400">
+                <Activity size={14} style={{ color: '#06b6d4' }} />
+                Relay health
+              </div>
+              <div className="text-lg font-semibold" style={{ color: relayHealth.color }}>{relayHealth.label}</div>
+            </div>
+            <div className="rounded-xl p-4" style={{ background: '#1e293b' }}>
+              <div className="flex items-center gap-2 mb-1 text-xs text-slate-400">
+                <Gauge size={14} style={{ color: '#06b6d4' }} />
+                Speed
+              </div>
+              <div className="text-lg font-semibold text-slate-100">{speed}</div>
+            </div>
+            <div className="rounded-xl p-4" style={{ background: '#1e293b' }}>
+              <div className="flex items-center gap-2 mb-1 text-xs text-slate-400">
+                <Users size={14} style={{ color: '#06b6d4' }} />
+                Active members
+              </div>
+              <div className="text-lg font-semibold text-slate-100">{connectedNow} / {users.length}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {relay && (
+        <div className="rounded-2xl p-6 mb-8" style={{ background: '#111827', border: '1px solid rgba(51,65,85,0.5)' }}>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-slate-100">Member activity snapshot</h2>
+            <span className="text-xs text-slate-500">As of {lastFetchedLabel}</span>
+          </div>
+
+          {users.length === 0 ? (
+            <p className="text-sm text-slate-400">No members added yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {users.map((user) => {
+                const dotColor = user.isPaused ? '#64748b' : user.isConnected ? '#22c55e' : '#475569';
+                const statusLabel = user.isPaused
+                  ? 'Paused'
+                  : user.isConnected
+                    ? 'Connected'
+                    : user.lastSeenAt
+                      ? `Last seen ${formatRelative(user.lastSeenAt)}`
+                    : 'Never connected';
+                return (
+                  <div key={user.id} className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: '#1e293b' }}>
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dotColor }} />
+                      <span className="text-sm text-slate-200">{user.displayName}</span>
+                    </div>
+                    <span className="text-xs" style={{ color: dotColor }}>{statusLabel}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-xs text-slate-500 mt-3">Activity is based on <code className="text-slate-400">last_seen_at</code> recorded by the relay. Use the Refresh button above for latest data. Historical time-series analytics require Cloudflare Analytics API integration.</p>
+        </div>
+      )}
+
+      {relay && (
+        <div className="rounded-2xl p-6 mb-8" style={{ background: '#111827', border: '1px solid rgba(51,65,85,0.5)' }}>
+          <h2 className="font-semibold text-slate-100 mb-2">Internet quality context (Iran)</h2>
+          <p className="text-sm text-slate-400 mb-4">
+            For country-wide internet disruption context, monitor Iran reports at Blackout Observatory.
+          </p>
+          <a
+            href="https://blackoutobservatory.org/iran-watchdog"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ background: 'rgba(6,182,212,0.1)', color: '#06b6d4', border: '1px solid rgba(6,182,212,0.2)' }}
+          >
+            Open Iran page <ExternalLink size={14} />
+          </a>
         </div>
       )}
 

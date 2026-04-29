@@ -103,7 +103,7 @@ export default function UserDetail() {
           <div className="flex flex-col items-center gap-6">
             <QrCodeComp data={displayConfig.trojanUri} label="sepehr-connection" />
             <p className="text-sm text-center text-slate-400">
-              Scan with <strong className="text-slate-200">Shadowrocket</strong> (iOS) or{' '}
+              Scan with <strong className="text-slate-200">V2Box</strong> (iPhone / iPad) or{' '}
               <strong className="text-slate-200">v2rayNG</strong> (Android).
               <br />
               <span className="text-xs mt-1 block">Or share the link: </span>

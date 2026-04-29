@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { CheckCircle, Circle, ExternalLink, Loader } from 'lucide-react';
+import { CheckCircle, Circle, ExternalLink, Eye, EyeOff, Loader } from 'lucide-react';
 import { useRelay } from '../hooks/useRelay.js';
 
 const schema = z.object({
@@ -25,6 +25,7 @@ const steps = [
 export default function Setup() {
   const [step, setStep] = useState(0);
   const [deployError, setDeployError] = useState<string | null>(null);
+  const [showToken, setShowToken] = useState(false);
   const navigate = useNavigate();
   const { deploy, relay } = useRelay();
 
@@ -73,6 +74,9 @@ export default function Setup() {
         </p>
         <p className="text-slate-500 mt-1 text-sm">
           No VPS, no external servers, no extra infrastructure.
+        </p>
+        <p className="text-slate-500 mt-1 text-sm">
+          Sepehr control plane stays on Cloudflare Workers + D1; your traffic relay is your own Cloudflare Worker.
         </p>
       </div>
 
@@ -187,13 +191,23 @@ export default function Setup() {
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">
                   API Token
                 </label>
-                <input
-                  type="password"
-                  placeholder="Paste your API token"
-                  className="w-full px-3 py-2.5 rounded-lg text-sm font-mono outline-none"
-                  style={{ background: '#1e293b', border: '1px solid rgba(51,65,85,0.8)', color: '#f1f5f9' }}
-                  {...register('cfApiToken')}
-                />
+                <div className="relative">
+                  <input
+                    type={showToken ? 'text' : 'password'}
+                    placeholder="Paste your API token"
+                    className="w-full px-3 py-2.5 pr-10 rounded-lg text-sm font-mono outline-none"
+                    style={{ background: '#1e293b', border: '1px solid rgba(51,65,85,0.8)', color: '#f1f5f9' }}
+                    {...register('cfApiToken')}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowToken((s) => !s)}
+                    className="absolute inset-y-0 right-2 flex items-center text-slate-400 hover:text-slate-200"
+                    aria-label={showToken ? 'Hide token' : 'Show token'}
+                  >
+                    {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
                 {errors.cfApiToken && (
                   <p className="mt-1 text-xs text-red-400">{errors.cfApiToken.message}</p>
                 )}

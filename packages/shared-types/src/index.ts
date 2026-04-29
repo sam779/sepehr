@@ -23,6 +23,7 @@ export interface RelayUser {
   displayName: string;
   isActive: boolean;
   isPaused: boolean;
+  isConnected: boolean;
   lastSeenAt: string | null;
   createdAt: string;
 }
@@ -88,6 +89,7 @@ export interface RelayCheckResponse {
 export interface RelayNotifyRequest {
   relay_id: string;
   event: string;
+  user_id?: string;
 }
 
 // ─── Generic API envelope ────────────────────────────────────────────────────

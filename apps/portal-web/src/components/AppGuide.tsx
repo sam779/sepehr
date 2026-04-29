@@ -7,13 +7,14 @@ interface Step {
 const steps: Step[] = [
   {
     number: 1,
-    title: 'Shadowrocket (iPhone / iPad)',
+    title: 'V2Box (iPhone / iPad) - recommended',
     body: (
       <ol className="list-decimal list-inside space-y-1.5 text-slate-300 text-sm">
-        <li>Open the App Store and install <strong>Shadowrocket</strong></li>
+        <li>Open the App Store and install <strong>V2Box</strong></li>
         <li>Tap the <strong>+</strong> button → <strong>Scan QR Code</strong></li>
         <li>Point your camera at the QR code above</li>
         <li>Enable the imported proxy and turn on the VPN toggle</li>
+        <li>If V2Box is unavailable in your region, use <strong>Shadowrocket</strong> as fallback</li>
       </ol>
     ),
   },

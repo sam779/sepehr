@@ -3,7 +3,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Link, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
-import { Wifi } from 'lucide-react';
+import { Eye, EyeOff, Wifi } from 'lucide-react';
 import { api } from '../lib/api-client.js';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -18,6 +18,7 @@ export default function Login() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [serverError, setServerError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const {
     register,
@@ -70,17 +71,27 @@ export default function Login() {
 
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5">Password</label>
-              <input
-                type="password"
-                autoComplete="current-password"
-                className="w-full px-3 py-2.5 rounded-lg text-sm outline-none"
-                style={{
-                  background: '#1e293b',
-                  border: '1px solid rgba(51,65,85,0.8)',
-                  color: '#f1f5f9',
-                }}
-                {...register('password')}
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  className="w-full px-3 py-2.5 pr-10 rounded-lg text-sm outline-none"
+                  style={{
+                    background: '#1e293b',
+                    border: '1px solid rgba(51,65,85,0.8)',
+                    color: '#f1f5f9',
+                  }}
+                  {...register('password')}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((s) => !s)}
+                  className="absolute inset-y-0 right-2 flex items-center text-slate-400 hover:text-slate-200"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
               {errors.password && (
                 <p className="mt-1 text-xs text-red-400">{errors.password.message}</p>
               )}

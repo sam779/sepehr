@@ -47,5 +47,5 @@ export function useRelayUsers() {
     },
   });
 
-  return { users: query.data ?? [], isLoading: query.isLoading, create, remove, patch, rotate };
+  return { users: query.data ?? [], isLoading: query.isLoading, dataUpdatedAt: query.dataUpdatedAt, refetch: query.refetch, create, remove, patch, rotate };
 }

@@ -4,15 +4,16 @@ import { Wifi, ExternalLink } from 'lucide-react';
 const apps = [
   {
     platform: 'iPhone / iPad',
-    name: 'Shadowrocket',
-    storeUrl: 'https://apps.apple.com/app/shadowrocket/id932747118',
+    name: 'V2Box (recommended)',
+    storeUrl: 'https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690',
     storeLabel: 'App Store',
     steps: [
-      'Download Shadowrocket from the App Store (paid — ~$3)',
+      'Download V2Box from the App Store',
       'In Sepehr, go to your family member\'s QR Code tab',
-      'In Shadowrocket: tap + → Scan QR Code',
+      'In V2Box: tap + → Scan QR Code',
       'Point your camera at the QR code',
-      'Tap the imported rule and toggle the connection ON',
+      'Activate the imported profile and toggle the connection ON',
+      'If V2Box is unavailable in your region, use Shadowrocket as fallback',
     ],
   },
   {
@@ -74,8 +75,18 @@ export default function Help() {
       <div className="px-6 py-8 max-w-4xl mx-auto">
         <h1 className="text-3xl font-bold text-slate-100 mb-2">App Setup Guide</h1>
         <p className="text-slate-400 mb-10">
-          Step-by-step instructions for each supported app. All apps are free (except Shadowrocket).
+          Step-by-step instructions for each supported app and the current Cloudflare-only architecture.
         </p>
+
+        <div className="rounded-2xl p-6 mb-6" style={{ background: '#111827', border: '1px solid rgba(51,65,85,0.5)' }}>
+          <h2 className="font-semibold text-slate-100 mb-3">Current system architecture</h2>
+          <ul className="space-y-2 text-sm text-slate-300">
+            <li>• Relay runs as a Cloudflare Worker in your own account</li>
+            <li>• Portal API also runs on Cloudflare Workers + D1</li>
+            <li>• No VPS, no external tunnel service, no extra transport layers</li>
+            <li>• Family member configs are Trojan over WSS endpoint from your Worker URL</li>
+          </ul>
+        </div>
 
         <div className="space-y-6">
           {apps.map(({ platform, name, storeUrl, storeLabel, steps }) => (

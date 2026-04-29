@@ -142,6 +142,12 @@ function isBlockedIPv4Uint32(ip) {
   if (ip === 0)                                     return true; // 0.0.0.0
   // 168.63.129.16 (Azure IMDS)
   if (ip === (((168 << 24) | (63 << 16) | (129 << 8) | 16) >>> 0)) return true;
+  // Cloudflare edge ranges — connecting to these loops back through CF infrastructure
+  if ((ip >>> 20) === ((104 << 4) | 1))             return true; // 104.16.0.0/12
+  if ((ip >>> 19) === ((172 << 3) | 2))             return true; // 172.64.0.0/13
+  if ((ip >>> 16) === ((104 << 8) | 26))            return true; // 104.26.0.0/16
+  if ((ip >>> 16) === ((104 << 8) | 27))            return true; // 104.27.0.0/16
+  if ((ip >>> 16) === ((104 << 8) | 21))            return true; // 104.21.0.0/16
   return false;
 }
 
@@ -200,24 +206,24 @@ async function checkAccess(password, relayId, portalUrl, relaySecret) {
       signal: controller.signal,
     });
     clearTimeout(tid);
-    if (!res.ok) return { valid: false, paused: false };
+    if (!res.ok) return { valid: false, paused: false, userId: null };
     const data = await res.json();
-    return { valid: !!data.valid, paused: !!data.paused };
+    return { valid: !!data.valid, paused: !!data.paused, userId: data.userId ?? null };
   } catch {
     // Fail-open: if portal is unreachable, allow the connection
-    return { valid: true, paused: false };
+    return { valid: true, paused: false, userId: null };
   }
 }
 
 // ─── Fire-and-forget portal notification ────────────────────────────────────
-function notifyPortal(relayId, event, portalUrl, relaySecret) {
+function notifyPortal(relayId, event, userId, portalUrl, relaySecret) {
   fetch(portalUrl + '/relay/notify', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': 'Bearer ' + relaySecret,
     },
-    body: JSON.stringify({ relay_id: relayId, event }),
+    body: JSON.stringify({ relay_id: relayId, event, user_id: userId }),
   }).catch(() => {});
 }
 
@@ -238,118 +244,109 @@ function toUint8Array(data) {
   return new Uint8Array(0);
 }
 
-function bytesToHex(bytes) {
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join(' ');
-}
-
-function createWsReadable(reader, initialData) {
-  let sentInitialData = false;
-
-  return new ReadableStream({
-    async pull(controller) {
-      if (!sentInitialData) {
-        sentInitialData = true;
-        if (initialData && initialData.length > 0) {
-          controller.enqueue(initialData);
-          return;
-        }
-      }
-
-      const { done, value } = await reader.read();
-      if (done) {
-        controller.close();
-        return;
-      }
-      controller.enqueue(value);
-    },
-    cancel() {
-      try { reader.cancel(); } catch {}
-    },
-  });
-}
-
-function createWsWritable(ws) {
-  return new WritableStream({
-    write(chunk) {
-      if (ws.readyState !== WebSocket.OPEN) {
-        throw new Error('WebSocket not open for outbound send');
-      }
-      ws.send(toUint8Array(chunk));
-    },
-    close() {
-      try { ws.close(1000, 'done'); } catch {}
-    },
-    abort(reason) {
-      console.error('[pipe tcp→ws] abort:', String(reason));
-      try { ws.close(1011, 'Pipe aborted'); } catch {}
-    },
-  });
-}
-
 // ─── Bidirectional pipe: WS ↔ TCP ────────────────────────────────────────────
+// Uses ONLY manual getReader()/getWriter() -- no pipeTo(), no pipeThrough().
+// Stream handles are acquired once upfront; ownership flags guard against
+// double-acquisition which causes reader-has-been-released crashes.
 async function pipeStreams(ws, socket, reader, initialData) {
   const IDLE_MS = 5 * 60 * 1000;
   const HARD_MS = 60 * 60 * 1000;
+
+  // ── Single ownership: acquire both handles before starting pipes ──────────
+  let wsReaderActive = false;   // true once we start consuming reader
+  let tcpWriterLocked = false;  // true once we hold socket.writable writer
+
+  let socketWriter;
+  let socketReader;
+  try {
+    if (tcpWriterLocked) throw new Error('TCP writer already locked');
+    if (wsReaderActive)  throw new Error('WS reader already active');
+    socketWriter   = socket.writable.getWriter();
+    tcpWriterLocked = true;
+    socketReader   = socket.readable.getReader();
+    wsReaderActive  = true;
+  } catch (e) {
+    console.error('[pipe] failed to acquire stream handles:', String(e));
+    try { ws.close(1011, 'Stream init failed'); } catch {}
+    try { socket.close(); } catch {}
+    return;
+  }
+
+  let closed = false;
   let idleHandle;
-  let loggedOutboundPreview = false;
+
+  // Idempotent shutdown — safe to call from anywhere
+  const closeBoth = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(idleHandle);
+    clearTimeout(hardHandle);
+    try { reader.cancel().catch(() => {}); } catch {}
+    try { socketReader.cancel().catch(() => {}); } catch {}
+    try { socketWriter.close().catch(() => {}); } catch {}
+    try { ws.close(1000, 'done'); } catch {}
+    try { socket.close(); } catch {}
+  };
 
   const resetIdle = () => {
     clearTimeout(idleHandle);
-    idleHandle = setTimeout(() => closeBothSides(ws, socket), IDLE_MS);
+    idleHandle = setTimeout(closeBoth, IDLE_MS);
   };
   resetIdle();
-  const hardHandle = setTimeout(() => closeBothSides(ws, socket), HARD_MS);
+  const hardHandle = setTimeout(closeBoth, HARD_MS);
 
-  const wsReadable = createWsReadable(reader, initialData).pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      const bytes = toUint8Array(chunk);
-      if (bytes.length > 0 && !loggedOutboundPreview) {
-        loggedOutboundPreview = true;
-        console.log('[pipe ws→tcp] first 16 bytes:', bytesToHex(bytes.slice(0, 16)));
-      }
-      if (bytes.length > 0) {
-        console.log('[pipe ws→tcp]', bytes.length, 'bytes');
+  // ws → socket: read WS frames via reader, write to TCP via socketWriter
+  const wsToSocket = (async () => {
+    try {
+      if (initialData && initialData.length > 0) {
+        console.log('[pipe ws→tcp] initialData:', initialData.length, 'bytes');
+        await socketWriter.write(initialData);
         resetIdle();
       }
-      controller.enqueue(bytes);
-    },
-    flush() {
-      console.log('[pipe ws→tcp] readable closed');
-    },
-  }));
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const bytes = toUint8Array(value);
+        if (bytes.length === 0) continue;
+        console.log('[pipe ws→tcp]', bytes.length, 'bytes');
+        resetIdle();
+        await socketWriter.write(bytes);
+      }
+      console.log('[pipe ws→tcp] ws reader done');
+    } catch (e) {
+      console.error('[pipe ws→tcp] error:', String(e));
+    } finally {
+      try { socketWriter.releaseLock(); tcpWriterLocked = false; } catch {}
+    }
+  })();
 
-  const wsWritable = createWsWritable(ws);
-
-  const wsToSocket = wsReadable.pipeTo(socket.writable).catch((e) => {
-    console.error('[pipe ws→tcp] error:', String(e));
-    throw e;
-  });
-
-  const socketToWs = socket.readable.pipeThrough(new TransformStream({
-    transform(chunk, controller) {
-      const bytes = toUint8Array(chunk);
-      if (bytes.length === 0) return;
-      resetIdle();
-      console.log('[pipe tcp→ws]', bytes.length, 'bytes');
-      controller.enqueue(bytes);
-    },
-    flush() {
-      console.log('[pipe tcp→ws] socket readable closed');
-    },
-  })).pipeTo(wsWritable).catch((e) => {
-    console.error('[pipe tcp→ws] error:', String(e));
-    throw e;
-  });
+  // socket → ws: read TCP via socketReader, send to WebSocket
+  const socketToWs = (async () => {
+    try {
+      while (true) {
+        const { done, value } = await socketReader.read();
+        if (done) break;
+        const bytes = toUint8Array(value);
+        if (bytes.length === 0) continue;
+        console.log('[pipe tcp→ws]', bytes.length, 'bytes');
+        resetIdle();
+        ws.send(bytes);
+      }
+      console.log('[pipe tcp→ws] socket reader done');
+    } catch (e) {
+      console.error('[pipe tcp→ws] error:', String(e));
+    } finally {
+      try { socketReader.releaseLock(); wsReaderActive = false; } catch {}
+    }
+  })();
 
   try {
     console.log('[pipe] start');
     await Promise.race([wsToSocket, socketToWs]);
   } finally {
-    clearTimeout(idleHandle);
-    clearTimeout(hardHandle);
-    closeBothSides(ws, socket);
+    closeBoth();
+    // Let both halves finish cleanup before returning
+    await Promise.allSettled([wsToSocket, socketToWs]);
   }
 }
 
@@ -370,7 +367,7 @@ async function waitForSocketReady(socket, host, port, timeoutMs) {
     ]);
 
     console.log(
-      '[tcp] connected',
+      '[tcp] connected confirmed',
       'host:', host,
       'port:', port,
       'remote:', info.remoteAddress ?? '(unknown)',
@@ -419,6 +416,7 @@ async function handleTrojanSession(ws, ip) {
       msgWriter.close().catch(() => {});
     }, 10_000);
 
+    let sessionUserId = null;
     try {
       // ── Accumulate frames until full Trojan header is parseable ────────────
       let buffer = new Uint8Array(0);
@@ -462,12 +460,13 @@ async function handleTrojanSession(ws, ip) {
       }
 
       // ── Portal access check ────────────────────────────────────────────────
-      const { valid, paused } = await checkAccess(
+      const { valid, paused, userId } = await checkAccess(
         header.password, RELAY_ID, PORTAL_URL, RELAY_SECRET);
       console.log('[access] valid:', valid, 'paused:', paused);
       if (!valid) { try { ws.close(1008, 'Unauthorized'); } catch {} return; }
       if (paused)  { try { ws.close(1008, 'Paused');       } catch {} return; }
       console.log('[access] passed');
+      sessionUserId = userId;
 
       // ── SSRF protection ────────────────────────────────────────────────────
       if (header.atyp === 0x03 && !validateHostname(header.host)) {
@@ -519,7 +518,7 @@ async function handleTrojanSession(ws, ip) {
         return;
       }
 
-      notifyPortal(RELAY_ID, 'connect', PORTAL_URL, RELAY_SECRET);
+      notifyPortal(RELAY_ID, 'connect', sessionUserId, PORTAL_URL, RELAY_SECRET);
 
       // Extract payload bytes that came in the same buffer as the header
       const initialData = buffer.length > header.dataOffset
@@ -537,6 +536,7 @@ async function handleTrojanSession(ws, ip) {
       ws.removeEventListener('close', onClose);
       ws.removeEventListener('error', onError);
       try { reader.releaseLock(); } catch {}
+      if (sessionUserId) notifyPortal(RELAY_ID, 'disconnect', sessionUserId, PORTAL_URL, RELAY_SECRET);
     }
 
   } catch (e) {
