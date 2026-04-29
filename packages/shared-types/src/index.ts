@@ -76,7 +76,7 @@ export interface PatchRelayUserRequest {
 // ─── Internal relay endpoints ────────────────────────────────────────────────
 
 export interface RelayCheckRequest {
-  password: string;
+  hash: string;   // SHA224(trojanPassword) hex — sent as-is by relay Worker
   relay_id: string;
 }
 

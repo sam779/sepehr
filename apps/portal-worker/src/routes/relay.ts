@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { sha256hex, generateToken, generateId, decryptAES256GCM } from '@sepehr/crypto';
+import { sha224hex, sha256hex, generateToken, generateId, decryptAES256GCM } from '@sepehr/crypto';
 import {
   buildTrojanUri,
   buildFullClashConfig,
@@ -39,6 +39,7 @@ interface RelayUserRow {
   relay_id: string;
   display_name: string;
   trojan_password: string;
+  password_hash: string;
   is_active: number;
   is_paused: number;
   last_seen_at: string | null;
@@ -229,12 +230,13 @@ relayRoutes.post('/users', sessionAuth, async (c) => {
 
   const id = generateId();
   const trojanPassword = generateToken(32); // base64url(32 random bytes)
+  const passwordHash = sha224hex(trojanPassword); // 56-char hex — what Trojan clients send
   const createdAt = new Date().toISOString();
 
   await c.env.DB.prepare(
-    'INSERT INTO relay_users (id, relay_id, display_name, trojan_password, is_active, is_paused, created_at) VALUES (?, ?, ?, ?, 1, 0, ?)',
+    'INSERT INTO relay_users (id, relay_id, display_name, trojan_password, password_hash, is_active, is_paused, created_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?)',
   )
-    .bind(id, relay.id, displayName, trojanPassword, createdAt)
+    .bind(id, relay.id, displayName, trojanPassword, passwordHash, createdAt)
     .run();
 
   const workerHost = new URL(relay.worker_url).hostname;
@@ -351,8 +353,9 @@ relayRoutes.post('/users/:id/rotate', sessionAuth, async (c) => {
   if (!userRow) return c.json({ ok: false, error: 'User not found' }, 404);
 
   const newPassword = generateToken(32);
-  await c.env.DB.prepare('UPDATE relay_users SET trojan_password = ? WHERE id = ?')
-    .bind(newPassword, userRow.id)
+  const newPasswordHash = sha224hex(newPassword);
+  await c.env.DB.prepare('UPDATE relay_users SET trojan_password = ?, password_hash = ? WHERE id = ?')
+    .bind(newPassword, newPasswordHash, userRow.id)
     .run();
 
   const workerHost = new URL(relay.worker_url).hostname;
@@ -377,8 +380,9 @@ relayRoutes.post('/check', async (c) => {
     return c.json({ ok: false, error: 'Invalid JSON' }, 400);
   }
 
-  const { password, relay_id } = body;
-  if (!password || !relay_id) return c.json({ valid: false, paused: false });
+  // Relay sends { hash, relay_id } where hash = SHA224(trojanPassword)
+  const { hash, relay_id } = body;
+  if (!hash || !relay_id) return c.json({ valid: false, paused: false });
 
   // Verify relay secret
   const relay = await c.env.DB.prepare(
@@ -392,11 +396,11 @@ relayRoutes.post('/check', async (c) => {
   const secretHash = await sha256hex(providedSecret);
   if (secretHash !== relay.relay_secret_hash) return c.json({ valid: false, paused: false });
 
-  // Check user password
+  // Compare incoming SHA224 hash directly against stored password_hash
   const user = await c.env.DB.prepare(
-    'SELECT is_paused FROM relay_users WHERE trojan_password = ? AND relay_id = ? AND is_active = 1',
+    'SELECT is_paused FROM relay_users WHERE password_hash = ? AND relay_id = ? AND is_active = 1 LIMIT 1',
   )
-    .bind(password, relay_id)
+    .bind(hash, relay_id)
     .first<{ is_paused: number }>();
 
   if (!user) return c.json({ valid: false, paused: false });

@@ -194,7 +194,9 @@ async function checkAccess(password, relayId, portalUrl, relaySecret) {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + relaySecret,
       },
-      body: JSON.stringify({ password, relay_id: relayId }),
+      // 'password' here is the SHA224 hex string the Trojan client sent —
+      // portal compares it directly against stored password_hash.
+      body: JSON.stringify({ hash: password, relay_id: relayId }),
       signal: controller.signal,
     });
     clearTimeout(tid);
