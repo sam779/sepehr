@@ -229,11 +229,71 @@ function concatBytes(a, b) {
   return out;
 }
 
+function toUint8Array(data) {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return new Uint8Array(0);
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join(' ');
+}
+
+function createWsReadable(reader, initialData) {
+  let sentInitialData = false;
+
+  return new ReadableStream({
+    async pull(controller) {
+      if (!sentInitialData) {
+        sentInitialData = true;
+        if (initialData && initialData.length > 0) {
+          controller.enqueue(initialData);
+          return;
+        }
+      }
+
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel() {
+      try { reader.cancel(); } catch {}
+    },
+  });
+}
+
+function createWsWritable(ws) {
+  return new WritableStream({
+    write(chunk) {
+      if (ws.readyState !== WebSocket.OPEN) {
+        throw new Error('WebSocket not open for outbound send');
+      }
+      ws.send(toUint8Array(chunk));
+    },
+    close() {
+      try { ws.close(1000, 'done'); } catch {}
+    },
+    abort(reason) {
+      console.error('[pipe tcp→ws] abort:', String(reason));
+      try { ws.close(1011, 'Pipe aborted'); } catch {}
+    },
+  });
+}
+
 // ─── Bidirectional pipe: WS ↔ TCP ────────────────────────────────────────────
 async function pipeStreams(ws, socket, reader, initialData) {
   const IDLE_MS = 5 * 60 * 1000;
   const HARD_MS = 60 * 60 * 1000;
   let idleHandle;
+  let loggedOutboundPreview = false;
 
   const resetIdle = () => {
     clearTimeout(idleHandle);
@@ -242,45 +302,49 @@ async function pipeStreams(ws, socket, reader, initialData) {
   resetIdle();
   const hardHandle = setTimeout(() => closeBothSides(ws, socket), HARD_MS);
 
-  // WS → TCP: read from TransformStream reader, write to socket
-  const wsToSocket = (async () => {
-    const writer = socket.writable.getWriter();
-    try {
-      if (initialData && initialData.length > 0) {
-        console.log('[pipe ws→tcp] initialData', initialData.length, 'bytes');
-        await writer.write(initialData);
+  const wsReadable = createWsReadable(reader, initialData).pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const bytes = toUint8Array(chunk);
+      if (bytes.length > 0 && !loggedOutboundPreview) {
+        loggedOutboundPreview = true;
+        console.log('[pipe ws→tcp] first 16 bytes:', bytesToHex(bytes.slice(0, 16)));
+      }
+      if (bytes.length > 0) {
+        console.log('[pipe ws→tcp]', bytes.length, 'bytes');
         resetIdle();
       }
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { console.log('[pipe ws→tcp] reader done'); break; }
-        console.log('[pipe ws→tcp]', value.length, 'bytes');
-        await writer.write(value);
-        resetIdle();
-      }
-    } catch (e) {
-      console.error('[pipe ws→tcp] error:', String(e));
-    } finally {
-      try { writer.releaseLock(); } catch {}
-    }
-  })();
+      controller.enqueue(bytes);
+    },
+    flush() {
+      console.log('[pipe ws→tcp] readable closed');
+    },
+  }));
 
-  // TCP → WS: for-await loop on socket.readable, send each chunk
-  const socketToWs = (async () => {
-    try {
-      for await (const chunk of socket.readable) {
-        if (!chunk || chunk.length === 0) continue;
-        resetIdle();
-        console.log('[pipe tcp→ws]', chunk.length, 'bytes');
-        ws.send(chunk);
-      }
+  const wsWritable = createWsWritable(ws);
+
+  const wsToSocket = wsReadable.pipeTo(socket.writable).catch((e) => {
+    console.error('[pipe ws→tcp] error:', String(e));
+    throw e;
+  });
+
+  const socketToWs = socket.readable.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const bytes = toUint8Array(chunk);
+      if (bytes.length === 0) return;
+      resetIdle();
+      console.log('[pipe tcp→ws]', bytes.length, 'bytes');
+      controller.enqueue(bytes);
+    },
+    flush() {
       console.log('[pipe tcp→ws] socket readable closed');
-    } catch (e) {
-      console.error('[pipe tcp→ws] error:', String(e));
-    }
-  })();
+    },
+  })).pipeTo(wsWritable).catch((e) => {
+    console.error('[pipe tcp→ws] error:', String(e));
+    throw e;
+  });
 
   try {
+    console.log('[pipe] start');
     await Promise.race([wsToSocket, socketToWs]);
   } finally {
     clearTimeout(idleHandle);
@@ -297,7 +361,7 @@ function closeBothSides(ws, socket) {
 // ─── Trojan handler ──────────────────────────────────────────────────────────
 async function handleTrojanSession(ws, ip) {
   // MUST be the very first line — before any await
-  ws.accept();
+  ws.accept({ allowHalfOpen: true });
   console.log('[ws] accepted, ip:', ip);
 
   try {
@@ -307,12 +371,18 @@ async function handleTrojanSession(ws, ip) {
 
     const onMessage = (event) => {
       if (typeof event.data === 'string') return;
-      const chunk = new Uint8Array(event.data);
+      const chunk = toUint8Array(event.data);
       if (chunk.length === 0) return;
       msgWriter.write(chunk).catch(() => msgWriter.close().catch(() => {}));
     };
-    const onClose = () => msgWriter.close().catch(() => {});
-    const onError = () => msgWriter.close().catch(() => {});
+    const onClose = (event) => {
+      console.log('[ws] close event code:', event.code, 'reason:', event.reason, 'readyState:', ws.readyState);
+      msgWriter.close().catch(() => {});
+    };
+    const onError = (event) => {
+      console.error('[ws] error event readyState:', ws.readyState, 'event:', String(event.type ?? 'error'));
+      msgWriter.close().catch(() => {});
+    };
 
     ws.addEventListener('message', onMessage);
     ws.addEventListener('close', onClose);
@@ -396,7 +466,37 @@ async function handleTrojanSession(ws, ip) {
         try { ws.close(1011, 'Connect failed'); } catch {}
         return;
       }
-      console.log('[tcp] connect() returned socket object');
+
+      socket.opened.then((info) => {
+        console.log(
+          '[tcp] connected',
+          'remote:', info.remoteAddress ?? '(unknown)',
+          'local:', info.localAddress ?? '(unknown)',
+          'wsReadyState:', ws.readyState,
+        );
+      }).catch((e) => {
+        console.error('[tcp] opened rejected:', String(e));
+      });
+      socket.closed.then(() => {
+        console.log('[tcp] closed cleanly');
+      }).catch((e) => {
+        console.error('[tcp] closed with error:', String(e));
+      });
+
+      try {
+        const info = await socket.opened;
+        console.log(
+          '[tcp] connected',
+          'remote:', info.remoteAddress ?? '(unknown)',
+          'local:', info.localAddress ?? '(unknown)',
+          'wsReadyState:', ws.readyState,
+        );
+      } catch (e) {
+        console.error('[tcp] connect failed before pipe:', String(e));
+        try { ws.close(1011, 'Connect failed'); } catch {}
+        await socket.close().catch(() => {});
+        return;
+      }
 
       notifyPortal(RELAY_ID, 'connect', PORTAL_URL, RELAY_SECRET);
 
