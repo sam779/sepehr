@@ -77,7 +77,13 @@ authRoutes.post('/signup', async (c) => {
     .bind(id, email, passwordHash, createdAt)
     .run();
 
-  await issueVerificationCode(c.env.DB, id, email, c.env.RESEND_API_KEY);
+  await issueVerificationCode(
+    c.env.DB,
+    id,
+    email,
+    c.env.RESEND_API_KEY,
+    c.env.RESEND_FROM_ADDRESS,
+  );
 
   return c.json({ ok: true, data: undefined }, 201);
 });
@@ -158,7 +164,13 @@ authRoutes.post('/resend-verification', async (c) => {
   // Always return 200 to avoid email enumeration
   if (!user || user.email_verified) return c.json({ ok: true, data: undefined });
 
-  await issueVerificationCode(c.env.DB, user.id, email, c.env.RESEND_API_KEY);
+  await issueVerificationCode(
+    c.env.DB,
+    user.id,
+    email,
+    c.env.RESEND_API_KEY,
+    c.env.RESEND_FROM_ADDRESS,
+  );
 
   return c.json({ ok: true, data: undefined });
 });
@@ -273,6 +285,7 @@ async function issueVerificationCode(
   userId: string,
   email: string,
   resendApiKey: string,
+  resendFromAddress?: string,
 ): Promise<void> {
   const code = generateNumericCode();
   const codeHash = await sha256hex(code);
@@ -287,7 +300,12 @@ async function issueVerificationCode(
     .bind(id, userId, codeHash, expiresAt, createdAt)
     .run();
 
-  await sendVerificationEmail({ to: email, code, resendApiKey });
+  await sendVerificationEmail({
+    to: email,
+    code,
+    resendApiKey,
+    ...(resendFromAddress ? { fromAddress: resendFromAddress } : {}),
+  });
 }
 
 function generateNumericCode(): string {

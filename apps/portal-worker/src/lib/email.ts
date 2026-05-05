@@ -3,35 +3,59 @@
  * Free tier: 100 emails/day, 3000/month.
  */
 
-const FROM_ADDRESS = 'Sepehr <noreply@sepehr.blackoutobservatory.org>';
+const DEFAULT_FROM_ADDRESS = 'Sepehr <noreply@blackoutobservatory.org>';
+const LEGACY_FROM_ADDRESS = 'Sepehr <noreply@sepehr.blackoutobservatory.org>';
 const RESEND_API = 'https://api.resend.com/emails';
 
 export async function sendVerificationEmail(opts: {
   to: string;
   code: string;
   resendApiKey: string;
+  fromAddress?: string;
 }): Promise<void> {
-  const { to, code, resendApiKey } = opts;
+  const { to, code, resendApiKey, fromAddress } = opts;
+  const fromCandidates = unique([
+    fromAddress,
+    DEFAULT_FROM_ADDRESS,
+    LEGACY_FROM_ADDRESS,
+  ]);
 
-  const res = await fetch(RESEND_API, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${resendApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: FROM_ADDRESS,
-      to: [to],
-      subject: 'Verify your Sepehr account',
-      html: verificationEmailHtml(code),
-      text: `Your Sepehr verification code is: ${code}\n\nThis code expires in 24 hours.`,
-    }),
-  });
+  let lastError = '';
 
-  if (!res.ok) {
+  for (const sender of fromCandidates) {
+    const res = await fetch(RESEND_API, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: sender,
+        to: [to],
+        subject: 'Verify your Sepehr account',
+        html: verificationEmailHtml(code),
+        text: `Your Sepehr verification code is: ${code}\n\nThis code expires in 24 hours.`,
+      }),
+    });
+
+    if (res.ok) return;
+
     const text = await res.text().catch(() => '');
-    throw new Error(`Email send failed (${res.status}): ${text.slice(0, 200)}`);
+    lastError = `Email send failed from ${sender} (${res.status}): ${text.slice(0, 200)}`;
+
+    // Resend API key/domain mismatch: try next sender candidate.
+    const unauthorizedSender =
+      res.status === 403 && text.toLowerCase().includes('not authorized to send emails from');
+    if (unauthorizedSender) continue;
+
+    throw new Error(lastError);
   }
+
+  throw new Error(lastError || 'Email send failed: no sender address available');
+}
+
+function unique(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((v): v is string => !!v?.trim()))];
 }
 
 function verificationEmailHtml(code: string): string {

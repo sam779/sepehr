@@ -7,6 +7,7 @@ export interface Env {
   DB: D1Database;
   ENCRYPTION_KEY: string;
   RESEND_API_KEY: string;
+  RESEND_FROM_ADDRESS?: string;
   PORTAL_URL: string;
 }
 
