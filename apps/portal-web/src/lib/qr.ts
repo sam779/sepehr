@@ -9,9 +9,11 @@ export interface QrOptions {
   width?: number;
 }
 
+// Black on white maximises contrast for all camera types and lighting conditions.
+// Quiet zone margin=4 matches the ISO/IEC 18004 minimum and improves low-end camera scan rates.
 const DEFAULT_OPTS: QrOptions = {
-  color: { dark: '#06b6d4', light: '#0a0f1e' },
-  width: 280,
+  color: { dark: '#000000', light: '#ffffff' },
+  width: 300,
 };
 
 export async function renderQrToCanvas(
@@ -24,7 +26,7 @@ export async function renderQrToCanvas(
     errorCorrectionLevel: 'M',
     width: merged.width,
     color: merged.color,
-    margin: 2,
+    margin: 4,
   });
 }
 
@@ -34,6 +36,6 @@ export async function qrToDataUrl(data: string, opts?: QrOptions): Promise<strin
     errorCorrectionLevel: 'M',
     width: merged.width,
     color: merged.color,
-    margin: 2,
+    margin: 4,
   });
 }

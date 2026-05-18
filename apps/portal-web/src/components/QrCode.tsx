@@ -36,7 +36,8 @@ export default function QrCode({ data, label }: QrCodeProps) {
 
   return (
     <div className="flex flex-col items-center gap-4">
-      <div className="p-3 rounded-xl" style={{ background: '#0a0f1e' }}>
+      {/* White background required for QR readability — dark wrapper is decorative only */}
+      <div className="p-3 rounded-xl" style={{ background: '#ffffff' }}>
         <canvas ref={canvasRef} />
       </div>
       <button

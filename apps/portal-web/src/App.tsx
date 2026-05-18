@@ -10,6 +10,7 @@ import Setup from './pages/Setup.js';
 import Users from './pages/Users.js';
 import UserDetail from './pages/UserDetail.js';
 import Help from './pages/Help.js';
+import Connect from './pages/Connect.js';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="/signup" element={<GuestRoute><Signup /></GuestRoute>} />
         <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/help" element={<Help />} />
+        <Route path="/connect" element={<Connect />} />
 
         <Route element={<Layout />}>
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />

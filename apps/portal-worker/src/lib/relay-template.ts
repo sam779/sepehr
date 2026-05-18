@@ -177,7 +177,9 @@ function isBlockedHost(host) {
   if (lower.endsWith('.local') || lower === 'local') return true;
   if (lower.endsWith('.internal') || lower === 'internal') return true;
   if (lower.startsWith('metadata.')) return true;
-  if (lower.endsWith('.amazonaws.com')) return true;
+  // Note: *.amazonaws.com is NOT blocked here — AWS IMDS (169.254.169.254) and
+  // Azure IMDS (168.63.129.16) are already blocked at the IP level above.
+  // Blocking the domain would prevent proxying to legitimate AWS-hosted services (S3, etc.).
 
   // All-numeric labels → dotted-IP disguised as hostname
   const labels = lower.split('.');
@@ -193,7 +195,7 @@ function isBlockedHost(host) {
 async function checkAccess(password, relayId, portalUrl, relaySecret) {
   try {
     const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 500);
+    const tid = setTimeout(() => controller.abort(), 1500);
     const res = await fetch(portalUrl + '/relay/check', {
       method: 'POST',
       headers: {
@@ -209,8 +211,11 @@ async function checkAccess(password, relayId, portalUrl, relaySecret) {
     if (!res.ok) return { valid: false, paused: false, userId: null };
     const data = await res.json();
     return { valid: !!data.valid, paused: !!data.paused, userId: data.userId ?? null };
-  } catch {
-    // Fail-open: if portal is unreachable, allow the connection
+  } catch (e) {
+    // Fail-open: if portal is unreachable or times out, allow the connection.
+    // Log the reason so operators can monitor timeout frequency via CF logs.
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn('[access] portal check failed (fail-open):', reason);
     return { valid: true, paused: false, userId: null };
   }
 }
@@ -505,7 +510,7 @@ async function handleTrojanSession(ws, ip) {
       });
 
       try {
-        await waitForSocketReady(socket, header.host, header.port, 5000);
+        await waitForSocketReady(socket, header.host, header.port, 10_000);
       } catch (e) {
         const isTimeout = e instanceof Error && e.message === 'TCP ready timeout';
         if (isTimeout) {
@@ -561,11 +566,12 @@ export default {
 
     // Trojan-over-WebSocket — exact match + prefix for ed= variants
     if (url.pathname === '/trojan' || url.pathname.startsWith('/trojan/') || url.pathname.startsWith('/trojan?')) {
-      console.log('[trojan] path hit, Upgrade:', request.headers.get('Upgrade') ?? '(none)');
-
-      const upgrade = request.headers.get('Upgrade');
-      if (upgrade !== 'websocket') {
-        console.log('[trojan] missing WebSocket upgrade, returning 400');
+      const upgradeHeader = request.headers.get('Upgrade') ?? '';
+      console.log('[trojan] path hit, Upgrade:', JSON.stringify(upgradeHeader));
+      // RFC 7230 §6.7: field-value may be a comma-separated token list; match case-insensitively
+      const upgradeTokens = upgradeHeader.split(',').map(t => t.trim().toLowerCase());
+      if (!upgradeTokens.includes('websocket')) {
+        console.log('[trojan] rejected non-WS: Upgrade header =', JSON.stringify(upgradeHeader));
         return new Response('Expected WebSocket upgrade', { status: 400 });
       }
 
