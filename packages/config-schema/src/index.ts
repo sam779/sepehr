@@ -5,7 +5,14 @@
  * Produces: Trojan URI, Clash YAML, debug JSON, QR data, share URL.
  */
 
-const PORTAL_ORIGIN = 'https://sepehr.blackoutobservatory.org';
+function getPortalOrigin(): string {
+  if (typeof window !== 'undefined') {
+    // Browser environment: use current origin
+    return window.location.origin;
+  }
+  // Server environment: use production domain
+  return 'https://sepehr.blackoutobservatory.org';
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -124,5 +131,5 @@ export function encodeQrData(trojanUri: string): string {
 
 /** Deep link that opens the trojan URI in supported apps via the portal landing page. */
 export function buildShareUrl(trojanUri: string): string {
-  return `${PORTAL_ORIGIN}/connect?c=${encodeQrData(trojanUri)}`;
+  return `${getPortalOrigin()}/connect?c=${encodeQrData(trojanUri)}`;
 }
