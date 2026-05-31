@@ -18,10 +18,11 @@ export const corsMiddleware = createMiddleware<{ Bindings: Env }>(async (c, next
   const allowed = isAllowedOrigin(origin);
 
   if (c.req.method === 'OPTIONS') {
+    if (!allowed) return new Response(null, { status: 403 });
     return new Response(null, {
       status: 204,
       headers: {
-        'Access-Control-Allow-Origin': allowed ? origin! : '',
+        'Access-Control-Allow-Origin': origin!,
         'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         'Access-Control-Allow-Credentials': 'true',

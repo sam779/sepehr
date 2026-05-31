@@ -17,6 +17,8 @@ import type {
   PatchRelayUserRequest,
   RelayCheckRequest,
   RelayNotifyRequest,
+  RelayLogEventRequest,
+  ConnectionLog,
 } from '@sepehr/shared-types';
 
 const MAX_RELAY_USERS = 5;
@@ -44,7 +46,17 @@ interface RelayUserRow {
   is_paused: number;
   last_seen_at: string | null;
   is_connected: number;
+  connection_country: string | null;
   created_at: string;
+}
+
+interface ConnectionLogRow {
+  id: string;
+  relay_user_id: string;
+  event: string;
+  country: string | null;
+  error_message: string | null;
+  timestamp: string;
 }
 
 export const relayRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -189,7 +201,7 @@ relayRoutes.get('/users', sessionAuth, async (c) => {
   if (!relay) return c.json({ ok: false, error: 'No relay found' }, 404);
 
   const { results } = await c.env.DB.prepare(
-    'SELECT id, display_name, is_active, is_paused, is_connected, last_seen_at, created_at FROM relay_users WHERE relay_id = ? AND is_active = 1 ORDER BY created_at ASC',
+    'SELECT id, display_name, is_active, is_paused, is_connected, last_seen_at, connection_country, created_at FROM relay_users WHERE relay_id = ? AND is_active = 1 ORDER BY created_at ASC',
   )
     .bind(relay.id)
     .all<RelayUserRow>();
@@ -457,6 +469,90 @@ relayRoutes.post('/notify', async (c) => {
   return c.json({ ok: true });
 });
 
+// ─── POST /api/relay/log  (relay → portal, auth: Bearer <relay_secret>) ─────
+
+relayRoutes.post('/log', async (c) => {
+  const authHeader = c.req.header('Authorization') ?? '';
+  if (!authHeader.startsWith('Bearer ')) return c.json({ ok: false }, 401);
+  const providedSecret = authHeader.slice(7);
+
+  let body: RelayLogEventRequest;
+  try {
+    body = await c.req.json<RelayLogEventRequest>();
+  } catch {
+    return c.json({ ok: false }, 400);
+  }
+
+  const { relay_id, user_id, event, country, error_message } = body;
+  if (!relay_id || !user_id || !event) return c.json({ ok: false }, 400);
+
+  const relay = await c.env.DB.prepare(
+    'SELECT relay_secret_hash FROM relays WHERE id = ?',
+  )
+    .bind(relay_id)
+    .first<{ relay_secret_hash: string }>();
+
+  if (!relay) return c.json({ ok: false }, 404);
+
+  const secretHash = await sha256hex(providedSecret);
+  if (secretHash !== relay.relay_secret_hash) return c.json({ ok: false }, 401);
+
+  // Log the event
+  const logId = generateId();
+  const timestamp = new Date().toISOString();
+  await c.env.DB.prepare(
+    'INSERT INTO connection_logs (id, relay_user_id, event, country, error_message, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+  )
+    .bind(logId, user_id, event, country ?? null, error_message ?? null, timestamp)
+    .run();
+
+  // If it's a connect event with country, update the relay user's current country
+  if (event === 'connect' && country) {
+    await c.env.DB.prepare(
+      'UPDATE relay_users SET connection_country = ? WHERE id = ? AND relay_id = ? AND is_active = 1',
+    )
+      .bind(country, user_id, relay_id)
+      .run();
+  }
+
+  return c.json({ ok: true });
+});
+
+// ─── GET /api/relay/users/:id/logs (last 24 hours) ───────────────────────────
+
+relayRoutes.get('/users/:id/logs', sessionAuth, async (c) => {
+  const userId = c.get('userId');
+  const relay = await getRelayForUser(c.env.DB, userId);
+  if (!relay) return c.json({ ok: false, error: 'No relay found' }, 404);
+
+  const userRow = await c.env.DB.prepare(
+    'SELECT id FROM relay_users WHERE id = ? AND relay_id = ? AND is_active = 1',
+  )
+    .bind(c.req.param('id'), relay.id)
+    .first<{ id: string }>();
+
+  if (!userRow) return c.json({ ok: false, error: 'User not found' }, 404);
+
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { results } = await c.env.DB.prepare(
+    'SELECT id, relay_user_id, event, country, error_message, timestamp FROM connection_logs WHERE relay_user_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 100',
+  )
+    .bind(userRow.id, oneDayAgo)
+    .all<ConnectionLogRow>();
+
+  return c.json({
+    ok: true,
+    data: (results ?? []).map((row) => ({
+      id: row.id,
+      relayUserId: row.relay_user_id,
+      event: row.event,
+      country: row.country,
+      errorMessage: row.error_message,
+      timestamp: row.timestamp,
+    })) as ConnectionLog[],
+  });
+});
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function getRelayForUser(db: D1Database, userId: string): Promise<RelayRow | null> {
@@ -498,6 +594,7 @@ function mapRelayUser(row: RelayUserRow) {
     isPaused: row.is_paused === 1,
     isConnected: row.is_connected === 1,
     lastSeenAt: row.last_seen_at ?? null,
+    connectionCountry: row.connection_country ?? null,
     createdAt: row.created_at,
   };
 }

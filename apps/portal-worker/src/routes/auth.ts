@@ -131,7 +131,7 @@ authRoutes.post('/verify-email', async (c) => {
 
   return c.json({
     ok: true,
-    data: { id: user.id, email, emailVerified: true },
+    data: { id: user.id, email, emailVerified: true, token },
   });
 });
 
@@ -216,7 +216,7 @@ authRoutes.post('/login', async (c) => {
 
   return c.json({
     ok: true,
-    data: { id: user.id, email: user.email, emailVerified: true },
+    data: { id: user.id, email: user.email, emailVerified: true, token },
   });
 });
 
@@ -234,7 +234,7 @@ authRoutes.post('/logout', sessionAuth, async (c) => {
     await c.env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(tokenHash).run();
   }
 
-  deleteCookie(c, 'session', { path: '/' });
+  deleteCookie(c, 'session', { path: '/', domain: '.blackoutobservatory.org' });
   return c.json({ ok: true, data: undefined });
 });
 
@@ -276,6 +276,7 @@ function setSessionCookie(c: Parameters<typeof setCookie>[0], token: string): vo
     secure: true,
     sameSite: 'None',
     path: '/',
+    domain: '.blackoutobservatory.org',
     expires: new Date(Date.now() + SESSION_DURATION_MS),
   });
 }

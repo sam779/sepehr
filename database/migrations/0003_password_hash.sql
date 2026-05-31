@@ -7,9 +7,8 @@
 -- trojan_password is kept for QR/config reconstruction (GET /users/:id/config,
 -- POST /users/:id/rotate).  It is never returned by the API after initial creation.
 
-ALTER TABLE relay_users ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';
-
-CREATE INDEX idx_relay_users_password_hash ON relay_users(password_hash);
+-- Column is added by initial schema or existing database, just ensure index exists
+CREATE INDEX IF NOT EXISTS idx_relay_users_password_hash ON relay_users(password_hash);
 
 -- Existing users have an invalid password_hash ('') and will fail auth.
 -- They are considered invalidated by this migration (early-stage, acceptable).

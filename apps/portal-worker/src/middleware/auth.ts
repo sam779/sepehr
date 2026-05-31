@@ -26,7 +26,16 @@ interface Variables {
  */
 export const sessionAuth = createMiddleware<{ Bindings: Env; Variables: Variables }>(
   async (c, next) => {
-    const token = getCookie(c, 'session');
+    let token = getCookie(c, 'session');
+
+    // If no cookie, try Authorization header: "Bearer <token>"
+    if (!token) {
+      const authHeader = c.req.header('Authorization');
+      if (authHeader?.startsWith('Bearer ')) {
+        token = authHeader.slice(7);
+      }
+    }
+
     if (!token) return c.json({ ok: false, error: 'Unauthorized' }, 401);
 
     const tokenHash = await sha256hex(token);

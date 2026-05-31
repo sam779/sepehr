@@ -10,6 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "sepehr-portal"
 database_id = "0207372d-6dd0-43a8-8eaa-4e8ad8471239"
+migrations_dir = "../../database/migrations"
 
 # Required secrets — set via: wrangler secret put <KEY>
 # ENCRYPTION_KEY  — base64url(32 random bytes), used for AES-256-GCM of CF API tokens

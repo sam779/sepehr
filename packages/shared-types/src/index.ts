@@ -25,7 +25,17 @@ export interface RelayUser {
   isPaused: boolean;
   isConnected: boolean;
   lastSeenAt: string | null;
+  connectionCountry: string | null;
   createdAt: string;
+}
+
+export interface ConnectionLog {
+  id: string;
+  relayUserId: string;
+  event: 'connect' | 'disconnect' | 'error' | 'auth_failed';
+  country: string | null;
+  errorMessage: string | null;
+  timestamp: string;
 }
 
 /** Returned only once, at creation or rotation. Never returned again. */
@@ -56,6 +66,16 @@ export interface VerifyEmailRequest {
 
 export interface ResendVerificationRequest {
   email: string;
+}
+
+// ─── Relay notification requests ────────────────────────────────────────────
+
+export interface RelayLogEventRequest {
+  relay_id: string;
+  user_id: string;
+  event: 'connect' | 'disconnect' | 'error' | 'auth_failed';
+  country?: string;
+  error_message?: string;
 }
 
 // ─── Relay requests ──────────────────────────────────────────────────────────

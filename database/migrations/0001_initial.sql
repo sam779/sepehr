@@ -1,7 +1,7 @@
 -- Migration 0001: Initial schema
 -- Sepehr portal database
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id          TEXT PRIMARY KEY,
   email       TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
@@ -9,7 +9,7 @@ CREATE TABLE users (
   created_at  TEXT NOT NULL
 );
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
   id          TEXT PRIMARY KEY,
   user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash  TEXT NOT NULL,
@@ -17,7 +17,7 @@ CREATE TABLE sessions (
   created_at  TEXT NOT NULL
 );
 
-CREATE TABLE email_verifications (
+CREATE TABLE IF NOT EXISTS email_verifications (
   id          TEXT PRIMARY KEY,
   user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   code_hash   TEXT NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE email_verifications (
 
 -- One relay per user (one-to-one).
 -- relay_secret_hash: SHA-256(relaySecret) — used to authenticate relay→portal calls.
-CREATE TABLE relays (
+CREATE TABLE IF NOT EXISTS relays (
   id                TEXT PRIMARY KEY,
   user_id           TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   worker_name       TEXT NOT NULL,
@@ -44,7 +44,7 @@ CREATE TABLE relays (
 -- Up to 5 relay users per relay.
 -- trojan_password is base64url(trojan_secret), stored plaintext.
 -- Never returned by API after initial creation.
-CREATE TABLE relay_users (
+CREATE TABLE IF NOT EXISTS relay_users (
   id             TEXT PRIMARY KEY,
   relay_id       TEXT NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
   display_name   TEXT NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE relay_users (
   created_at     TEXT NOT NULL
 );
 
-CREATE INDEX idx_sessions_hash          ON sessions(token_hash);
-CREATE INDEX idx_relay_users_password   ON relay_users(trojan_password);
-CREATE INDEX idx_relay_users_relay      ON relay_users(relay_id);
-CREATE INDEX idx_relays_secret          ON relays(relay_secret_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_hash          ON sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_relay_users_password   ON relay_users(trojan_password);
+CREATE INDEX IF NOT EXISTS idx_relay_users_relay      ON relay_users(relay_id);
+CREATE INDEX IF NOT EXISTS idx_relays_secret          ON relays(relay_secret_hash);

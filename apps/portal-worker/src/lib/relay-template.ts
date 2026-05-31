@@ -232,6 +232,20 @@ function notifyPortal(relayId, event, userId, portalUrl, relaySecret) {
   }).catch(() => {});
 }
 
+// ─── Fire-and-forget portal log event ──────────────────────────────────────
+function notifyPortalLog(relayId, event, userId, country, errorMessage, portalUrl, relaySecret) {
+  const payload = { relay_id: relayId, event, user_id: userId, country };
+  if (errorMessage) payload.error_message = errorMessage;
+  fetch(portalUrl + '/relay/log', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + relaySecret,
+    },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+
 // ─── Concat two Uint8Arrays ──────────────────────────────────────────────────
 function concatBytes(a, b) {
   const out = new Uint8Array(a.length + b.length);
@@ -385,10 +399,10 @@ async function waitForSocketReady(socket, host, port, timeoutMs) {
 }
 
 // ─── Trojan handler ──────────────────────────────────────────────────────────
-async function handleTrojanSession(ws, ip) {
+async function handleTrojanSession(ws, ip, country) {
   // MUST be the very first line — before any await
   ws.accept({ allowHalfOpen: true });
-  console.log('[ws] accepted, ip:', ip);
+  console.log('[ws] accepted, ip:', ip, 'country:', country);
 
   try {
     // Queue ALL incoming WS frames immediately so none are missed
@@ -523,7 +537,7 @@ async function handleTrojanSession(ws, ip) {
         return;
       }
 
-      notifyPortal(RELAY_ID, 'connect', sessionUserId, PORTAL_URL, RELAY_SECRET);
+      notifyPortalLog(RELAY_ID, 'connect', sessionUserId, country, null, PORTAL_URL, RELAY_SECRET);
 
       // Extract payload bytes that came in the same buffer as the header
       const initialData = buffer.length > header.dataOffset
@@ -541,7 +555,7 @@ async function handleTrojanSession(ws, ip) {
       ws.removeEventListener('close', onClose);
       ws.removeEventListener('error', onError);
       try { reader.releaseLock(); } catch {}
-      if (sessionUserId) notifyPortal(RELAY_ID, 'disconnect', sessionUserId, PORTAL_URL, RELAY_SECRET);
+      if (sessionUserId) notifyPortalLog(RELAY_ID, 'disconnect', sessionUserId, country, null, PORTAL_URL, RELAY_SECRET);
     }
 
   } catch (e) {
@@ -576,7 +590,8 @@ export default {
       }
 
       const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-      console.log('[trojan] upgrade OK, ip:', ip);
+      const country = request.headers.get('CF-IPCountry') ?? 'unknown';
+      console.log('[trojan] upgrade OK, ip:', ip, 'country:', country);
 
       if (rateLimitCheck(ip)) {
         return new Response('Rate limit exceeded', { status: 429 });
@@ -587,7 +602,7 @@ export default {
       const server = pair[1];
 
       // ws.accept() is called inside handleTrojanSession before any await
-      handleTrojanSession(server, ip).catch(() => {
+      handleTrojanSession(server, ip, country).catch(() => {
         try { server.close(1011, 'Internal error'); } catch {}
       });
 

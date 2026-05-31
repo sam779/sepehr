@@ -1,11 +1,13 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ChevronDown, Plus, Pause, Play, Trash2, QrCode, X, Wifi, Activity } from 'lucide-react';
+import { ChevronDown, Plus, Pause, Play, Trash2, QrCode, X, Wifi, Activity, Globe, AlertCircle, RotateCw } from 'lucide-react';
 import { useRelayUsers } from '../hooks/useRelayUsers.js';
 import { useRelay } from '../hooks/useRelay.js';
+import { useConnectionLogs } from '../hooks/useConnectionLogs.js';
 import type { RelayUserConfig } from '@sepehr/shared-types';
 import QrCodeComp from '../components/QrCode.js';
 
@@ -155,6 +157,195 @@ function formatRelative(lastSeenAt: string | null): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function formatTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
+}
+
+function getEventColor(event: string): string {
+  switch (event) {
+    case 'connect':
+      return '#22c55e';
+    case 'disconnect':
+      return '#f59e0b';
+    case 'error':
+    case 'auth_failed':
+      return '#ef4444';
+    default:
+      return '#64748b';
+  }
+}
+
+function getEventLabel(event: string): string {
+  switch (event) {
+    case 'connect':
+      return 'Connected';
+    case 'disconnect':
+      return 'Disconnected';
+    case 'auth_failed':
+      return 'Auth failed';
+    case 'error':
+      return 'Error';
+    default:
+      return event;
+  }
+}
+
+interface ExpandedUserDetailsProps {
+  user: any;
+  relay: any;
+  activeTab: 'details' | 'logs';
+  setActiveTab: (tab: 'details' | 'logs') => void;
+}
+
+function ExpandedUserDetails({ user, relay, activeTab, setActiveTab }: ExpandedUserDetailsProps) {
+  const { data: logs, isLoading } = useConnectionLogs(user.id);
+  const qc = useQueryClient();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await qc.invalidateQueries({ queryKey: ['logs', user.id] });
+    setIsRefreshing(false);
+  };
+
+  return (
+    <div className="mt-4 rounded-xl p-4" style={{ background: '#0f172a', border: '1px solid rgba(51,65,85,0.5)' }}>
+      {/* Tab buttons */}
+      <div className="flex items-center justify-between gap-2 mb-4 pb-4 border-b" style={{ borderColor: 'rgba(51,65,85,0.4)' }}>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setActiveTab('details')}
+            className="px-3 py-2 text-sm font-medium transition-colors"
+            style={{
+              color: activeTab === 'details' ? '#06b6d4' : '#64748b',
+              borderBottom: activeTab === 'details' ? '2px solid #06b6d4' : 'none',
+            }}
+          >
+            Details
+          </button>
+          <button
+            onClick={() => setActiveTab('logs')}
+            className="px-3 py-2 text-sm font-medium transition-colors"
+            style={{
+              color: activeTab === 'logs' ? '#06b6d4' : '#64748b',
+              borderBottom: activeTab === 'logs' ? '2px solid #06b6d4' : 'none',
+            }}
+          >
+            Logs (24h)
+          </button>
+        </div>
+        {activeTab === 'logs' && (
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing || isLoading}
+            className="p-2 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-white/5 transition-colors disabled:opacity-50"
+            title="Refresh logs"
+          >
+            <RotateCw size={16} className={isRefreshing ? 'animate-spin' : ''} />
+          </button>
+        )}
+      </div>
+
+      {/* Details tab */}
+      {activeTab === 'details' && (
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div className="rounded-lg p-3" style={{ background: '#111827' }}>
+            <div className="text-xs text-slate-400 mb-1 flex items-center gap-1">
+              <Wifi size={13} /> Relay health
+            </div>
+            <div className="text-sm font-medium" style={{ color: relay?.relayStatus === 'active' ? '#22c55e' : '#f59e0b' }}>
+              {relay?.relayStatus === 'active' ? 'Healthy / active' : 'Paused or degraded'}
+            </div>
+          </div>
+
+          <div className="rounded-lg p-3" style={{ background: '#111827' }}>
+            <div className="text-xs text-slate-400 mb-1 flex items-center gap-1">
+              <Activity size={13} /> Member connection
+            </div>
+            <div className="text-sm font-medium text-slate-100">
+              {user.isPaused
+                ? 'Paused by admin'
+                : user.isConnected
+                  ? 'Connected'
+                  : user.lastSeenAt
+                    ? `Disconnected — last seen ${formatRelative(user.lastSeenAt)}`
+                    : 'Never connected'}
+            </div>
+          </div>
+
+          {user.connectionCountry && (
+            <div className="rounded-lg p-3" style={{ background: '#111827' }}>
+              <div className="text-xs text-slate-400 mb-1 flex items-center gap-1">
+                <Globe size={13} /> Tunnel location
+              </div>
+              <div className="text-sm font-medium text-slate-100">
+                {user.connectionCountry}
+              </div>
+              {user.isConnected && (
+                <div className="text-xs text-slate-500 mt-1">Currently active</div>
+              )}
+            </div>
+          )}
+
+          <div className="rounded-lg p-3" style={{ background: '#111827' }}>
+            <div className="text-xs text-slate-400 mb-1">Requests used</div>
+            <div className="text-sm font-medium text-slate-100">Not exposed in current Cloudflare API view</div>
+            <div className="text-xs text-slate-500 mt-1">Last activity: {formatRelative(user.lastSeenAt)}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Logs tab */}
+      {activeTab === 'logs' && (
+        <div>
+          {isLoading ? (
+            <div className="text-slate-400 text-sm">Loading logs…</div>
+          ) : !logs || logs.length === 0 ? (
+            <div className="text-slate-400 text-sm">No connection events in the last 24 hours</div>
+          ) : (
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {logs.map((log) => (
+                <div
+                  key={log.id}
+                  className="rounded-lg p-3 flex items-start gap-3"
+                  style={{ background: '#111827', borderLeft: `3px solid ${getEventColor(log.event)}` }}
+                >
+                  <div className="flex-1 text-sm">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-medium text-slate-100">{getEventLabel(log.event)}</span>
+                      {log.country && (
+                        <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(6,182,212,0.1)', color: '#06b6d4' }}>
+                          {log.country}
+                        </span>
+                      )}
+                    </div>
+                    {log.errorMessage && (
+                      <div className="text-xs text-red-400 flex items-center gap-1 mt-1">
+                        <AlertCircle size={12} />
+                        {log.errorMessage}
+                      </div>
+                    )}
+                    <div className="text-xs text-slate-500 mt-1">
+                      {formatTimestamp(log.timestamp)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 
 export default function Users() {
@@ -164,6 +355,7 @@ export default function Users() {
   const [newConfig, setNewConfig] = useState<{ config: RelayUserConfig; name: string } | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<'details' | 'logs'>('details');
 
   const handleCreated = (config: RelayUserConfig, name: string) => {
     setShowAdd(false);
@@ -265,39 +457,7 @@ export default function Users() {
               </div>
 
               {expandedId === user.id && (
-                <div className="mt-4 rounded-xl p-4 grid sm:grid-cols-2 gap-3" style={{ background: '#0f172a', border: '1px solid rgba(51,65,85,0.5)' }}>
-                  <div className="rounded-lg p-3" style={{ background: '#111827' }}>
-                    <div className="text-xs text-slate-400 mb-1 flex items-center gap-1">
-                      <Wifi size={13} /> Relay health
-                    </div>
-                    <div className="text-sm font-medium" style={{ color: relay?.relayStatus === 'active' ? '#22c55e' : '#f59e0b' }}>
-                      {relay?.relayStatus === 'active' ? 'Healthy / active' : 'Paused or degraded'}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg p-3" style={{ background: '#111827' }}>
-                    <div className="text-xs text-slate-400 mb-1 flex items-center gap-1">
-                      <Activity size={13} /> Member connection
-                    </div>
-                    <div className="text-sm font-medium text-slate-100">
-                      {user.isPaused
-                        ? 'Paused by admin'
-                        : user.isConnected
-                          ? 'Connected'
-                          : user.lastSeenAt
-                            ? `Disconnected — last seen ${formatRelative(user.lastSeenAt)}`
-                            : 'Never connected'}
-                    </div>
-                  </div>
-
-
-
-                  <div className="rounded-lg p-3" style={{ background: '#111827' }}>
-                    <div className="text-xs text-slate-400 mb-1">Requests used</div>
-                    <div className="text-sm font-medium text-slate-100">Not exposed in current Cloudflare API view</div>
-                    <div className="text-xs text-slate-500 mt-1">Last activity: {formatRelative(user.lastSeenAt)}</div>
-                  </div>
-                </div>
+                <ExpandedUserDetails user={user} relay={relay} activeTab={activeTab} setActiveTab={setActiveTab} />
               )}
             </div>
           ))}
