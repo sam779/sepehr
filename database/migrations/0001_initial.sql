@@ -49,13 +49,17 @@ CREATE TABLE IF NOT EXISTS relay_users (
   relay_id       TEXT NOT NULL REFERENCES relays(id) ON DELETE CASCADE,
   display_name   TEXT NOT NULL,
   trojan_password TEXT NOT NULL,
+  password_hash  TEXT NOT NULL DEFAULT '',
   is_active      INTEGER NOT NULL DEFAULT 1,
   is_paused      INTEGER NOT NULL DEFAULT 0,
+  is_connected   INTEGER NOT NULL DEFAULT 0,
   last_seen_at   TEXT,
+  connection_country TEXT,
   created_at     TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_hash          ON sessions(token_hash);
 CREATE INDEX IF NOT EXISTS idx_relay_users_password   ON relay_users(trojan_password);
+CREATE INDEX IF NOT EXISTS idx_relay_users_password_hash ON relay_users(password_hash);
 CREATE INDEX IF NOT EXISTS idx_relay_users_relay      ON relay_users(relay_id);
 CREATE INDEX IF NOT EXISTS idx_relays_secret          ON relays(relay_secret_hash);

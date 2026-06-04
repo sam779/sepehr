@@ -4,7 +4,7 @@
  */
 
 import { encryptAES256GCM, decryptAES256GCM, sha256hex, generateToken, generateId } from '@sepehr/crypto';
-import { buildRelayScript } from './relay-template.js';
+import { buildRelayScript } from '@sepehr/relay-worker';
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 const COMPATIBILITY_DATE = '2024-09-23';
@@ -50,7 +50,6 @@ export async function deployRelayWorker(opts: DeployOptions): Promise<DeployResu
   // Step 6 — Encrypt CF API token and persist relay metadata
   const { enc: cfApiTokenEnc, iv: cfIv } = await encryptAES256GCM(cfApiToken, encryptionKey);
   const relaySecretHash = await sha256hex(relaySecret);
-  const relayId2 = generateId(); // DB row ID for relay
   const createdAt = new Date().toISOString();
 
   await db
@@ -59,10 +58,10 @@ export async function deployRelayWorker(opts: DeployOptions): Promise<DeployResu
        (id, user_id, worker_name, worker_url, cf_account_id, cf_api_token_enc, cf_iv, relay_secret_hash, relay_status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
     )
-    .bind(relayId2, userId, workerName, workerUrl, cfAccountId, cfApiTokenEnc, cfIv, relaySecretHash, createdAt)
+    .bind(relayId, userId, workerName, workerUrl, cfAccountId, cfApiTokenEnc, cfIv, relaySecretHash, createdAt)
     .run();
 
-  return { relayId: relayId2, workerName, workerUrl };
+  return { relayId, workerName, workerUrl };
 }
 
 interface RedeployOptions {
@@ -126,7 +125,6 @@ async function uploadWorker(
     compatibility_date: COMPATIBILITY_DATE,
     compatibility_flags: [] as string[],
     bindings: [] as unknown[],
-    usage_model: 'bundled',
     observability: {
       enabled: false,
       head_sampling_rate: 1,

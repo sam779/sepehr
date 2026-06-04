@@ -7,8 +7,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/shared-types && npm run build -w packages/crypto && npm run build -w packages/config-schema && npm run build --w apps/portal-worker && npm run build -w apps/portal-web",
-    "typecheck": "tsc -b packages/shared-types packages/crypto packages/config-schema apps/portal-worker apps/portal-web",
+    "build": "npm run build -w packages/shared-types && npm run build -w packages/crypto && npm run build -w packages/config-schema && npm run build -w packages/relay-worker && npm run build --w apps/portal-worker && npm run build -w apps/portal-web",
+    "typecheck": "tsc -b packages/shared-types packages/crypto packages/config-schema packages/relay-worker apps/portal-worker apps/portal-web",
     "lint": "eslint .",
     "format": "prettier --write ."
   },

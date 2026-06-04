@@ -7,7 +7,7 @@
 -- trojan_password is kept for QR/config reconstruction (GET /users/:id/config,
 -- POST /users/:id/rotate).  It is never returned by the API after initial creation.
 
--- Column is added by initial schema or existing database, just ensure index exists
+-- Column is present in the current initial schema.
 CREATE INDEX IF NOT EXISTS idx_relay_users_password_hash ON relay_users(password_hash);
 
 -- Existing users have an invalid password_hash ('') and will fail auth.

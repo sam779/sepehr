@@ -4,6 +4,7 @@
   "private": true,
   "main": "./src/index.ts",
   "scripts": {
+    "build": "tsc --noEmit",
     "dev": "wrangler dev --config ../../infra/wrangler/portal.toml",
     "deploy": "wrangler deploy --config ../../infra/wrangler/portal.toml",
     "typecheck": "tsc --noEmit",
@@ -13,6 +14,7 @@
   "dependencies": {
     "@sepehr/config-schema": "*",
     "@sepehr/crypto": "*",
+    "@sepehr/relay-worker": "*",
     "@sepehr/shared-types": "*",
     "hono": "^4.5.3"
   },
